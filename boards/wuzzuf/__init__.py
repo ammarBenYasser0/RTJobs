@@ -15,6 +15,13 @@ from core.browser import (
     launch_cdp_chrome,
     stop_chrome,
 )
+import signal
+
+class TimeoutException(Exception):
+    pass
+
+def _timeout_handler(signum, frame):
+    raise TimeoutException("Board run timed out")
 
 install_cdp_default_context_patch()
 
@@ -35,18 +42,15 @@ class WuzzufBoard(JobBoard):
             clean_locks=KILL_CHROME_ON_START,
         )
 
-        try:
-            items = scraper.scrape(self.selectors, cdp_url=cdp_url_for(CHROME_DEBUG_PORT))
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(300)
 
-            new_count = 0
-            blocked_names: list[str] = []
-            for job in items:
-                if blocklist.is_blocked(job["source"], job.get("company") or ""):
-                    db.mark_seen(job["source"], job["external_id"])
-                    blocked_names.append(job.get("company") or "?")
-                    continue
-                db.save_job(job)
-                new_count += 1
+        try:
+            result = scraper.scrape(self.selectors, cdp_url=cdp_url_for(CHROME_DEBUG_PORT))
+
+            new_count = result["new_count"]
+            blocked_names = result["blocked_names"]
+
             if blocked_names:
                 print(
                     f"[wuzzuf] Filtered out {len(blocked_names)} blocked-company"
@@ -54,16 +58,23 @@ class WuzzufBoard(JobBoard):
                 )
             print(f"[wuzzuf] Saved {new_count} new job(s)")
 
-            sent = telegram.notify_jobs(db.get_unnotified(self.name))
-            print(f"[wuzzuf] Notified {sent} job(s)")
-
             db.finish_run(run_id, "ok", jobs_found=new_count)
             return new_count
 
+        except TimeoutException:
+            print("[wuzzuf] Run timed out after 5 minutes.")
+            db.finish_run(run_id, "timeout")
+            telegram.notify_failure(
+                "Wuzzuf board timed out",
+                "The spider hung for more than 5 minutes and was killed."
+            )
+            return 0
         except Exception as e:
             db.finish_run(run_id, "error", error=str(e))
             telegram.notify_failure("Wuzzuf board failed", str(e))
             print(f"[wuzzuf] Run failed: {e}")
             return 0
         finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
             stop_chrome(chrome)

@@ -30,7 +30,7 @@ from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
 from config import INDEED_SEARCH_URL
-from core import db, markup
+from core import blocklist, db, markup, telegram
 from core.browser import patch_no_load_wait
 
 _BASE_URL = "https://eg.indeed.com"
@@ -315,6 +315,8 @@ class IndeedJobSpider(Spider):
         self._detail_jobs: dict[str, dict] = {}  # jobkey -> enriched job
         self._queued: set[str] = set()
         self._detail_snapshots = 0
+        self._new_count: int = 0
+        self._blocked_names: list[str] = []
 
         super().__init__(*args, **kwargs)
 
@@ -392,10 +394,25 @@ class IndeedJobSpider(Spider):
         self._detail_jobs[key] = job
 
     async def parse(self, response: Response):
+        # Persist + notify this page's jobs immediately with snippet
+        # descriptions, so they're not lost if detail-fetches hang.
+        for job in self._page_jobs:
+            if blocklist.is_blocked(job["source"], job.get("company") or ""):
+                db.mark_seen(job["source"], job["external_id"])
+                self._blocked_names.append(job.get("company") or "?")
+                continue
+            db.save_job(job)
+            self._new_count += 1
+
+        if self._page_jobs:
+            sent = telegram.notify_jobs(db.get_unnotified("indeed"))
+            if sent:
+                print(f"[indeed] Notified {sent} job(s)")
+
+        # Now yield detail-page requests for enrichment.
         for job in self._page_jobs:
             key = job["external_id"]
             if key in self._queued or len(self._queued) >= _MAX_DETAIL_FETCHES:
-                # Detail cap hit — keep the snippet as the description.
                 print(f"[indeed] Detail fetch skipped for {key} (cap reached)")
                 yield job
                 continue
@@ -416,12 +433,16 @@ class IndeedJobSpider(Spider):
             yield job
 
 
-def scrape(selectors: dict, cdp_url: str) -> list[dict]:
-    """Run the spider and return the scraped job dicts."""
+def scrape(selectors: dict, cdp_url: str) -> dict:
+    """Run the spider and return results including incremental counts."""
     spider = IndeedJobSpider(selectors=selectors, cdp_url=cdp_url)
     result = spider.start()
     items = list(result.items)
     print(
         f"[indeed] {len(items)} item(s) scraped in {result.stats.elapsed_seconds:.1f}s"
     )
-    return items
+    return {
+        "items": items,
+        "new_count": spider._new_count,
+        "blocked_names": spider._blocked_names,
+    }

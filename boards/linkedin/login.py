@@ -78,12 +78,15 @@ def _handle_checkpoint(page, selectors: dict) -> bool:
         f" and solve it manually — I will keep waiting up to"
         f" {CHECKPOINT_WAIT_SECONDS // 60} minutes.",
         snapshot,
-        hint="Attach: http://localhost:9222 (chrome://inspect)",
+        hint="Open chrome://inspect in Chrome -> Configure localhost:9222 -> click inspect",
     )
 
     deadline = time.time() + CHECKPOINT_WAIT_SECONDS
     while time.time() < deadline:
-        time.sleep(5)
+        try:
+            page.wait_for_timeout(3000)
+        except Exception:
+            time.sleep(3)
         if _is_logged_in(page):
             print("[login] Checkpoint solved — resuming.")
             return True

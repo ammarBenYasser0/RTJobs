@@ -28,7 +28,9 @@ installed here swaps in the browser's default context instead.
 import inspect
 import os
 import shutil
+import socket
 import subprocess
+import threading
 import time
 import urllib.request
 
@@ -38,7 +40,19 @@ def patch_no_load_wait(page):
 
     Returns a coroutine for async pages (scrapling awaits page_setup in
     async sessions) and None for sync pages.
+
+    Idempotent: scrapling's page pool reuses pages, so page_setup can run
+    multiple times on the same page object.  A sentinel attribute prevents
+    re-wrapping the already-patched methods.
     """
+    if getattr(page, "_rtjobs_patched", False):
+        # Already patched — return a no-op coroutine for async pages so
+        # scrapling's ``await page_setup(page)`` doesn't break.
+        if inspect.iscoroutinefunction(page.goto):
+            async def _noop():
+                pass
+            return _noop()
+        return None
     if inspect.iscoroutinefunction(page.goto):
         return _patch_async(page)
     return _patch_sync(page)
@@ -61,6 +75,7 @@ def _patch_sync(page) -> None:
         return orig_wait(state, *args, **kwargs)
 
     page.wait_for_load_state = wait_for_load_state
+    page._rtjobs_patched = True
 
 
 async def _patch_async(page) -> None:
@@ -80,6 +95,7 @@ async def _patch_async(page) -> None:
         return await orig_wait(state, *args, **kwargs)
 
     page.wait_for_load_state = wait_for_load_state
+    page._rtjobs_patched = True
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +112,65 @@ def _find_chrome() -> str:
     return "/opt/google/chrome/chrome"
 
 
+_FORWARDER_SOCKET: socket.socket | None = None
+
+
+def _start_tcp_forwarder(listen_port: int, target_port: int) -> socket.socket | None:
+    """Forward TCP traffic from 0.0.0.0:listen_port to 127.0.0.1:target_port.
+
+    Linux Chrome ignores --remote-debugging-address=0.0.0.0 and binds CDP
+    only to loopback 127.0.0.1, causing external connections via Docker port
+    forwarding to be refused. This bridge listens on 0.0.0.0 and forwards
+    packets locally so Chrome sees loopback connections.
+    """
+    try:
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            try:
+                server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except Exception:
+                pass
+        server.bind(("0.0.0.0", listen_port))
+        server.listen(10)
+    except Exception as e:
+        print(f"[browser] TCP forwarder couldn't bind port {listen_port}: {e}")
+        return None
+
+    def pipe(src, dst):
+        try:
+            while True:
+                data = src.recv(4096)
+                if not data:
+                    break
+                dst.sendall(data)
+        except Exception:
+            pass
+        finally:
+            try:
+                src.close()
+            except Exception:
+                pass
+            try:
+                dst.close()
+            except Exception:
+                pass
+
+    def accept_loop():
+        while True:
+            try:
+                client, _ = server.accept()
+                target = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                target.connect(("127.0.0.1", target_port))
+                threading.Thread(target=pipe, args=(client, target), daemon=True).start()
+                threading.Thread(target=pipe, args=(target, client), daemon=True).start()
+            except Exception:
+                break
+
+    threading.Thread(target=accept_loop, daemon=True).start()
+    return server
+
+
 def launch_cdp_chrome(profile_dir: str, port: int, headless: bool = False,
                       timeout: float = 30.0, clean_locks: bool = False) -> subprocess.Popen:
     """Launch real Chrome with an HTTP DevTools endpoint on `port`.
@@ -109,6 +184,7 @@ def launch_cdp_chrome(profile_dir: str, port: int, headless: bool = False,
     previously killed Chrome makes the next launch exit with code 21
     ("profile appears to be in use").
     """
+    global _FORWARDER_SOCKET
     if clean_locks:
         for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
             try:
@@ -116,10 +192,11 @@ def launch_cdp_chrome(profile_dir: str, port: int, headless: bool = False,
             except OSError:
                 pass
 
+    internal_port = port + 1 if port == 9222 else port
     args = [
         _find_chrome(),
         f"--user-data-dir={profile_dir}",
-        f"--remote-debugging-port={port}",
+        f"--remote-debugging-port={internal_port}",
         "--remote-allow-origins=*",
         "--no-sandbox",
         "--disable-dev-shm-usage",
@@ -132,23 +209,40 @@ def launch_cdp_chrome(profile_dir: str, port: int, headless: bool = False,
 
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.time() + timeout
-    url = f"http://127.0.0.1:{port}/json/version"
+    url = f"http://127.0.0.1:{internal_port}/json/version"
     while time.time() < deadline:
         if proc.poll() is not None:
             raise RuntimeError(f"Chrome exited early with code {proc.returncode}")
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
-                    print(f"[browser] Chrome up — CDP attachable at http://localhost:{port}")
+                    if internal_port != port:
+                        _FORWARDER_SOCKET = _start_tcp_forwarder(port, internal_port)
+                    print(
+                        f"[browser] Chrome up — CDP attachable via chrome://inspect"
+                        f" (target localhost:{port}) or http://localhost:{port}/json"
+                    )
                     return proc
         except Exception:
             time.sleep(0.3)
     stop_chrome(proc)
-    raise RuntimeError(f"Chrome CDP endpoint never came up on port {port}")
+    raise RuntimeError(f"Chrome CDP endpoint never came up on port {internal_port}")
 
 
 def stop_chrome(proc: subprocess.Popen | None) -> None:
     """Terminate Chrome gracefully, force-kill if it doesn't exit."""
+    global _FORWARDER_SOCKET
+    if _FORWARDER_SOCKET:
+        try:
+            _FORWARDER_SOCKET.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            _FORWARDER_SOCKET.close()
+        except Exception:
+            pass
+        _FORWARDER_SOCKET = None
+
     if proc is None or proc.poll() is not None:
         return
     proc.terminate()
@@ -160,7 +254,8 @@ def stop_chrome(proc: subprocess.Popen | None) -> None:
 
 
 def cdp_url_for(port: int) -> str:
-    return f"http://127.0.0.1:{port}"
+    internal_port = port + 1 if port == 9222 else port
+    return f"http://127.0.0.1:{internal_port}"
 
 
 _PATCH_INSTALLED = False

@@ -37,10 +37,9 @@ KILL_CHROME_ON_START = os.environ.get("KILL_CHROME_ON_START", "false").lower() =
 # LinkedIn
 # ---------------------------------------------------------------------------
 LINKEDIN_ENABLED = os.environ.get("LINKEDIN_ENABLED", "true").lower() == "true"
-LINKEDIN_SEARCH_URL = (
-    "https://www.linkedin.com/jobs/search/"
-    "?distance=25&geoId=106155005&keywords=&origin=JOB_SEARCH_PAGE_JOB_FILTER"
-    "&refresh=true&sortBy=DD"
+LINKEDIN_SEARCH_URL = os.environ.get(
+    "LINKEDIN_SEARCH_URL",
+    "https://www.linkedin.com/jobs/search/?currentJobId=4402032460&f_TPR=r7200&geoId=106155005&keywords=frontend%20developer&origin=JOB_SEARCH_PAGE_JOB_FILTER&refresh=true",
 )
 # Landing page for login: already-logged-in sessions get redirected to the
 # feed; logged-out ones get the credential form directly.
@@ -55,7 +54,10 @@ CHECKPOINT_WAIT_SECONDS = int(os.environ.get("CHECKPOINT_WAIT_SECONDS", "600"))
 # ---------------------------------------------------------------------------
 # Wuzzuf
 # ---------------------------------------------------------------------------
-WUZZUF_SEARCH_URL = os.environ.get("WUZZUF_SEARCH_URL", "https://wuzzuf.net/search/jobs?q=&start=0")
+WUZZUF_SEARCH_URL = os.environ.get(
+    "WUZZUF_SEARCH_URL",
+    "https://wuzzuf.net/search/jobs/?a=navbl%7Cspbl&filters%5Bpost_date%5D%5B0%5D=within_24_hours&q=frontend%20developer"
+)
 WUZZUF_PROFILE_DIR = os.path.abspath(
     os.environ.get("WUZZUF_PROFILE_DIR", "./wuzzufprofile")
 )
@@ -67,7 +69,7 @@ WUZZUF_PROFILE_DIR = os.path.abspath(
 INDEED_ENABLED = os.environ.get("INDEED_ENABLED", "false").lower() == "true"
 INDEED_SEARCH_URL = os.environ.get(
     "INDEED_SEARCH_URL",
-    "https://eg.indeed.com/jobs?q=&l=%D9%85%D8%B5%D8%B1&radius=100&sort=date",
+    "https://eg.indeed.com/jobs?q=frontend&l=egypt&sort=date&fromage=1&from=searchOnDesktopSerp&vjk=e6100dd5bfdeb85f",
 )
 INDEED_PROFILE_DIR = os.path.abspath(
     os.environ.get("INDEED_PROFILE_DIR", "./indeedprofile")

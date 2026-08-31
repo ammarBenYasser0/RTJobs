@@ -8,7 +8,9 @@ services:
     # Host networking so Chrome's CDP port (bound to loopback inside the
     # container) is reachable as localhost:9222 on the host — bridge
     # networking can't forward to a container-loopback listener.
-    network_mode: host
+    # network_mode: host (Note: on Windows Docker Desktop, use ports mapping below)
+    ports: 
+      - "9222:9222"
     user: "1000:1000"
     env_file: .env
     environment:

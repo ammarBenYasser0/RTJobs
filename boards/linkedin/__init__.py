@@ -27,6 +27,13 @@ from core.browser import (
     patch_no_load_wait,
     stop_chrome,
 )
+import signal
+
+class TimeoutException(Exception):
+    pass
+
+def _timeout_handler(signum, frame):
+    raise TimeoutException("Board run timed out")
 
 install_cdp_default_context_patch()
 
@@ -64,9 +71,22 @@ class LinkedInBoard(JobBoard):
             clean_locks=KILL_CHROME_ON_START,
         )
 
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(300)
+
         try:
             return self._run(chrome, cdp, run_id)
+        except TimeoutException:
+            print("[linkedin] Run timed out after 5 minutes.")
+            db.finish_run(run_id, "timeout")
+            telegram.notify_failure(
+                "LinkedIn board timed out",
+                "The spider hung for more than 5 minutes and was killed."
+            )
+            return 0
         finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
             stop_chrome(chrome)
 
     def _run(self, chrome, cdp: str, run_id: int) -> int:
@@ -78,7 +98,7 @@ class LinkedInBoard(JobBoard):
         try:
             with StealthySession(
                 cdp_url=cdp,
-                disable_resources=True,
+                disable_resources=False,
                 timeout=30_000,
                 page_setup=patch_no_load_wait,
                 page_action=page_action,
@@ -94,35 +114,25 @@ class LinkedInBoard(JobBoard):
             result = scraper.scrape(self.selectors, cdp_url=cdp)
 
             if result["login_redirect"]:
-                print("[linkedin] Session died mid-scrape — aborting.")
+                print("[linkedin] Session died mid-scrape \u2014 aborting.")
                 db.finish_run(run_id, "session_expired")
                 telegram.notify_failure(
                     "LinkedIn session expired mid-scrape",
                     "The browser was redirected to login while scraping."
                     " The next run will re-login.",
-                    hint="Check http://localhost:9222 if it persists",
+                    hint="Open chrome://inspect (target localhost:9222) if it persists",
                 )
                 return 0
 
-            new_count = 0
-            blocked_names: list[str] = []
-            for job in result["items"]:
-                if blocklist.is_blocked(job["source"], job.get("company") or ""):
-                    db.mark_seen(job["source"], job["external_id"])
-                    blocked_names.append(job.get("company") or "?")
-                    continue
-                db.save_job(job)
-                new_count += 1
+            new_count = result["new_count"]
+            blocked_names = result["blocked_names"]
+
             if blocked_names:
                 print(
                     f"[linkedin] Filtered out {len(blocked_names)} blocked-company"
                     f" job(s): {', '.join(sorted(set(blocked_names)))}"
                 )
             print(f"[linkedin] Saved {new_count} new job(s)")
-
-            pending = db.get_unnotified(self.name)
-            sent = telegram.notify_jobs(pending)
-            print(f"[linkedin] Notified {sent} job(s)")
 
             db.finish_run(run_id, "ok", jobs_found=new_count)
             return new_count

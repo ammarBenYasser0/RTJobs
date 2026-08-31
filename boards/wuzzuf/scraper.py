@@ -24,7 +24,7 @@ from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
 from config import WUZZUF_SEARCH_URL
-from core import db, markup
+from core import blocklist, db, markup, telegram
 from core.browser import patch_no_load_wait
 
 _MAX_PAGES = 20
@@ -256,6 +256,8 @@ class WuzzufJobSpider(Spider):
         self.seen_ids = db.load_seen_ids("wuzzuf")
         self._page_jobs: list[dict] = []
         self._repeat_found: bool = False
+        self._new_count: int = 0
+        self._blocked_names: list[str] = []
         super().__init__(*args, **kwargs)
 
     def configure_sessions(self, manager):
@@ -313,6 +315,24 @@ class WuzzufJobSpider(Spider):
         for job in self._page_jobs:
             yield job
 
+        # Persist + notify this page's jobs immediately so earlier pages
+        # are not lost if a later page hangs.
+        for job in self._page_jobs:
+            if blocklist.is_blocked(job["source"], job.get("company") or ""):
+                db.mark_seen(job["source"], job["external_id"])
+                self._blocked_names.append(job.get("company") or "?")
+                continue
+            db.save_job(job)
+            self._new_count += 1
+
+        if self._page_jobs:
+            sent = telegram.notify_jobs(db.get_unnotified("wuzzuf"))
+            if sent:
+                print(f"[wuzzuf] Notified {sent} job(s)")
+        else:
+            print(f"[wuzzuf] No jobs found on page {response.url}, stopping pagination.")
+            return
+
         if self._repeat_found:
             return
 
@@ -337,12 +357,16 @@ class WuzzufJobSpider(Spider):
         )
 
 
-def scrape(selectors: dict, cdp_url: str) -> list[dict]:
-    """Run the spider and return the scraped job dicts."""
+def scrape(selectors: dict, cdp_url: str) -> dict:
+    """Run the spider and return results including incremental counts."""
     spider = WuzzufJobSpider(selectors=selectors, cdp_url=cdp_url)
     result = spider.start()
     items = list(result.items)
     print(
         f"[wuzzuf] {len(items)} item(s) scraped in {result.stats.elapsed_seconds:.1f}s"
     )
-    return items
+    return {
+        "items": items,
+        "new_count": spider._new_count,
+        "blocked_names": spider._blocked_names,
+    }
