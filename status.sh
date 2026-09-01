@@ -10,13 +10,50 @@ echo ""
 echo "[1/3] Scraper Runs (Last 24 Hours):"
 docker compose run --quiet --rm scraper python -c "
 import sqlite3
+import urllib.parse
 from datetime import datetime, timedelta
+
+def format_label(source: str, url: str) -> str:
+    if not url:
+        return source.capitalize()
+    try:
+        parsed = urllib.parse.urlparse(url)
+        params = urllib.parse.parse_qs(parsed.query)
+        loc = None
+        if 'location' in params and params['location'][0].strip():
+            loc = params['location'][0].strip()
+        elif 'l' in params and params['l'][0].strip():
+            loc = params['l'][0].strip()
+        elif parsed.netloc.startswith('sa.'):
+            loc = 'Saudi Arabia'
+        elif parsed.netloc.startswith('eg.'):
+            loc = 'Egypt'
+
+        kw = None
+        if 'keywords' in params and params['keywords'][0].strip():
+            kw = params['keywords'][0].strip()
+        elif 'q' in params and params['q'][0].strip():
+            kw = params['q'][0].strip()
+
+        source_name = {'linkedin': 'LinkedIn', 'wuzzuf': 'Wuzzuf', 'indeed': 'Indeed'}.get(source.lower(), source.title())
+        details = []
+        if loc:
+            details.append(loc.title() if loc.lower() != 'emea' else 'EMEA')
+        if kw and not loc:
+            clean_kw = kw.replace('developer', '').replace('Developer', '').strip()
+            details.append(clean_kw.title() if clean_kw else kw.title())
+
+        if details:
+            return f'{source_name} ({\", \".join(details)})'
+        return source_name
+    except Exception:
+        return source.capitalize()
 
 try:
     c = sqlite3.connect('/data/rtjobs.db')
     c.row_factory = sqlite3.Row
     try:
-        c.execute("ALTER TABLE runs ADD COLUMN url TEXT")
+        c.execute(\"ALTER TABLE runs ADD COLUMN url TEXT\")
     except Exception:
         pass
 
@@ -36,14 +73,12 @@ try:
         if runs:
             print('(No runs in last 24h — showing latest 10 runs)')
 
-    print(f'{\"SOURCE\":<10} | {\"STATUS\":<10} | {\"JOBS\":<5} | {\"STARTED\":<20} | {\"LINK / QUERY\":<45} | ERROR')
-    print('-' * 115)
+    print(f'{\"TARGET / QUERY\":<30} | {\"STATUS\":<10} | {\"JOBS\":<5} | {\"STARTED\":<20} | ERROR')
+    print('-' * 85)
     for r in runs:
-        url_str = r['url'] or '-'
-        if len(url_str) > 45:
-            url_str = url_str[:42] + '...'
+        label = format_label(r['source'], r['url'])
         error_msg = r['error'] if r['error'] else '-'
-        print(f'{r[\"source\"]:<10} | {r[\"status\"]:<10} | {str(r[\"jobs_found\"]):<5} | {str(r[\"started_at\"] or \"\"):<20} | {url_str:<45} | {error_msg}')
+        print(f'{label:<30} | {r[\"status\"]:<10} | {str(r[\"jobs_found\"]):<5} | {str(r[\"started_at\"] or \"\"):<20} | {error_msg}')
 except Exception as e:
     print(f'Error reading DB runs: {e}')
 "
