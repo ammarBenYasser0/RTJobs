@@ -17,7 +17,7 @@ from core.browser import (
 )
 import signal
 
-class TimeoutException(Exception):
+class TimeoutException(BaseException):
     pass
 
 def _timeout_handler(signum, frame):

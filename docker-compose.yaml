@@ -43,7 +43,7 @@ services:
     # job-exec may be defined on a target container). Seconds-first cron.
     labels:
       ofelia.enabled: "true"
-      ofelia.job-run.scraper.schedule: "0 */6 * * * *"
+      ofelia.job-run.scraper.schedule: "0 */15 * * * *"
       ofelia.job-run.scraper.container: "rtjobs"
       ofelia.job-run.scraper.delete: "false"
 

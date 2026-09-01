@@ -62,9 +62,9 @@ description, link, extra(dict), scraped_at`.
    profile's cookies (would silently drop the LinkedIn session / Wuzzuf
    cf_clearance every run). CAREFUL: after a `new_context()` call the
    contexts list is reordered and index 0 becomes the ISOLATED one — grab
-   contexts[0] straight after `connect_over_cdp`. The container needs
-   `network_mode: host` because Chrome binds CDP to loopback and
-   docker-proxy can't forward to a container-loopback listener.
+   contexts[0] straight after `connect_over_cdp`. To allow external Docker
+   port forwarding (e.g. on Windows), `launch_cdp_chrome` runs a local
+   TCP forwarder bridging `0.0.0.0:9222` to Chrome's loopback CDP port.
 3. **Wuzzuf data comes from the SSR blob**, not just the DOM:
    `window.Wuzzuf.initialStoreState.job.collection` (full entities: HTML
    description/requirements, exact `postedAt` `MM/DD/YYYY HH:MM:SS`,
@@ -143,10 +143,10 @@ Notable: `LINKEDIN_ENABLED` (currently `True` in `.env`), `INDEED_ENABLED`
   prefix instead; ld+json is the fallback). `pubDate` is normalized to midnight —
   always prefer `createDate`. Verified live: CF solved via persistent profile,
   detail cap `_MAX_DETAIL_FETCHES=10`/run (snippet placeholder when skipped).
-- LinkedIn: logged-in scraping verified (pages of 25, detail panels,
-  dedupe against `seen_ids`); `posted_at` matches host local time.
+- LinkedIn: logged-in scraping verified (pages of 25, parsed directly from
+  search cards to improve speed, dedupe against `seen_ids`); `posted_at` matches host local time.
 - Docker: python:3.13-slim + real Chrome + xvfb-run, `init: true`,
-  `network_mode: host` on the scraper; volumes `chrome_profile`,
+  standard port mapping `9222:9222` on the scraper; volumes `chrome_profile`,
   `wuzzuf_profile`, `scraper_data`; `./markup` bind-mounted to
   `/data/markup`.
 
@@ -194,3 +194,8 @@ Set dummy env before importing config in test scripts:
 - Docstrings/comments are used throughout — keep that style when editing.
 - DB timestamps are local time strings `YYYY-MM-DD HH:MM(:SS)`; snapshot
   filenames are UTC. Don't mix formats.
+- Timeouts: All board runners are wrapped in a 5-minute `SIGALRM` timeout
+  to prevent infinite hangs.
+- Persistence: Spiders persist jobs and notify Telegram incrementally per-page
+  within `parse` (rather than in bulk at the end) to prevent data loss if a
+  later page hangs.

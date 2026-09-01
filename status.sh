@@ -1,6 +1,9 @@
 #!/bin/bash
 # Simple script to check the status of RTJobs
 
+# Move to the script's directory so docker compose finds the yaml file
+cd "$(dirname "$0")" || exit 1
+
 echo "=== RTJobs Status ==="
 echo ""
 
