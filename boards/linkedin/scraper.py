@@ -14,7 +14,6 @@ from scrapling import Selector
 from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
-from config import LINKEDIN_SEARCH_URL
 from core import blocklist, db, markup, telegram
 from core.browser import patch_no_load_wait
 
@@ -52,10 +51,11 @@ def _text(sel: Selector, css: str, separator: str = "") -> str:
 class LinkedInJobSpider(Spider):
     name = "linkedin_job_spider"
 
-    def __init__(self, selectors: dict, cdp_url: str, *args, **kwargs):
+    def __init__(self, selectors: dict, cdp_url: str, url: str, seen_ids: set | None = None, *args, **kwargs):
         self.sel = selectors
         self.cdp_url = cdp_url
-        self.seen_ids = db.load_seen_ids("linkedin")
+        self.url = url
+        self.seen_ids = seen_ids if seen_ids is not None else db.load_seen_ids("linkedin")
 
         self._page_jobs: list[dict] = []
         self._repeat_found: bool = False
@@ -78,7 +78,7 @@ class LinkedInJobSpider(Spider):
 
     async def start_requests(self):
         yield Request(
-            LINKEDIN_SEARCH_URL,
+            self.url,
             callback=self.parse,
             sid="stealth",
             page_action=self.deep_scan_page,
@@ -218,9 +218,9 @@ class LinkedInJobSpider(Spider):
         )
 
 
-def scrape(selectors: dict, cdp_url: str) -> dict:
+def scrape(selectors: dict, cdp_url: str, url: str, seen_ids: set | None = None) -> dict:
     """Run the spider. Returns {'items': [...], 'login_redirect': bool, 'new_count': int, 'blocked_names': list}."""
-    spider = LinkedInJobSpider(selectors=selectors, cdp_url=cdp_url)
+    spider = LinkedInJobSpider(selectors=selectors, cdp_url=cdp_url, url=url, seen_ids=seen_ids)
     result = spider.start()
     items = list(result.items)
     print(

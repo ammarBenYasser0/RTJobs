@@ -3,11 +3,30 @@ config.py
 Single source of truth. All paths and credentials imported from here.
 """
 
+import json
 import os
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _parse_url_list(val: str | None, default: str) -> list[str]:
+    """Accept a plain URL string or a JSON list of URLs from env.
+    Single-string values (existing .env files) are returned as a one-element list.
+    """
+    raw = (val or "").strip()
+    if not raw:
+        raw = default
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(u).strip() for u in parsed if str(u).strip()]
+        if isinstance(parsed, str) and parsed.strip():
+            return [parsed.strip()]
+    except (ValueError, TypeError):
+        pass
+    return [raw]
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -37,8 +56,8 @@ KILL_CHROME_ON_START = os.environ.get("KILL_CHROME_ON_START", "false").lower() =
 # LinkedIn
 # ---------------------------------------------------------------------------
 LINKEDIN_ENABLED = os.environ.get("LINKEDIN_ENABLED", "true").lower() == "true"
-LINKEDIN_SEARCH_URL = os.environ.get(
-    "LINKEDIN_SEARCH_URL",
+LINKEDIN_SEARCH_URLS = _parse_url_list(
+    os.environ.get("LINKEDIN_SEARCH_URLS") or os.environ.get("LINKEDIN_SEARCH_URL"),
     "https://www.linkedin.com/jobs/search/?currentJobId=4402032460&f_TPR=r7200&geoId=106155005&keywords=frontend%20developer&origin=JOB_SEARCH_PAGE_JOB_FILTER&refresh=true",
 )
 # Landing page for login: already-logged-in sessions get redirected to the
@@ -54,9 +73,9 @@ CHECKPOINT_WAIT_SECONDS = int(os.environ.get("CHECKPOINT_WAIT_SECONDS", "600"))
 # ---------------------------------------------------------------------------
 # Wuzzuf
 # ---------------------------------------------------------------------------
-WUZZUF_SEARCH_URL = os.environ.get(
-    "WUZZUF_SEARCH_URL",
-    "https://wuzzuf.net/search/jobs/?a=navbl%7Cspbl&filters%5Bpost_date%5D%5B0%5D=within_24_hours&q=frontend%20developer"
+WUZZUF_SEARCH_URLS = _parse_url_list(
+    os.environ.get("WUZZUF_SEARCH_URLS") or os.environ.get("WUZZUF_SEARCH_URL"),
+    "https://wuzzuf.net/search/jobs/?a=navbl%7Cspbl&filters%5Bpost_date%5D%5B0%5D=within_24_hours&q=frontend%20developer",
 )
 WUZZUF_PROFILE_DIR = os.path.abspath(
     os.environ.get("WUZZUF_PROFILE_DIR", "./wuzzufprofile")
@@ -67,8 +86,8 @@ WUZZUF_PROFILE_DIR = os.path.abspath(
 # ---------------------------------------------------------------------------
 # Disabled by default until the board is verified live (see INDEED.md).
 INDEED_ENABLED = os.environ.get("INDEED_ENABLED", "false").lower() == "true"
-INDEED_SEARCH_URL = os.environ.get(
-    "INDEED_SEARCH_URL",
+INDEED_SEARCH_URLS = _parse_url_list(
+    os.environ.get("INDEED_SEARCH_URLS") or os.environ.get("INDEED_SEARCH_URL"),
     "https://eg.indeed.com/jobs?q=frontend&l=egypt&sort=date&fromage=1&from=searchOnDesktopSerp&vjk=e6100dd5bfdeb85f",
 )
 INDEED_PROFILE_DIR = os.path.abspath(

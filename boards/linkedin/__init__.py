@@ -7,6 +7,8 @@ spider both connect to that same Chrome over cdp_url and reuse its default
 (persistent profile) context, so the login cookies carry into the scrape.
 """
 
+import signal
+
 from scrapling.fetchers import StealthySession
 
 from boards.base import JobBoard
@@ -18,8 +20,9 @@ from config import (
     LINKEDIN_ENABLED,
     LINKEDIN_LOGIN_URL,
     LINKEDIN_PROFILE_DIR,
+    LINKEDIN_SEARCH_URLS,
 )
-from core import blocklist, db, login_state, telegram
+from core import db, login_state, telegram
 from core.browser import (
     cdp_url_for,
     install_cdp_default_context_patch,
@@ -27,7 +30,6 @@ from core.browser import (
     patch_no_load_wait,
     stop_chrome,
 )
-import signal
 
 class TimeoutException(BaseException):
     pass
@@ -71,22 +73,17 @@ class LinkedInBoard(JobBoard):
             clean_locks=KILL_CHROME_ON_START,
         )
 
-        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-        signal.alarm(300)
-
         try:
             return self._run(chrome, cdp, run_id)
-        except TimeoutException:
-            print("[linkedin] Run timed out after 5 minutes.")
-            db.finish_run(run_id, "timeout")
+        except Exception as e:
+            db.finish_run(run_id, "error", error=str(e))
             telegram.notify_failure(
-                "LinkedIn board timed out",
-                "The spider hung for more than 5 minutes and was killed."
+                "LinkedIn board failed",
+                str(e),
             )
+            print(f"[linkedin] Run failed: {e}")
             return 0
         finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
             stop_chrome(chrome)
 
     def _run(self, chrome, cdp: str, run_id: int) -> int:
@@ -111,31 +108,62 @@ class LinkedInBoard(JobBoard):
                 db.finish_run(run_id, "login_failed")
                 return 0
 
-            result = scraper.scrape(self.selectors, cdp_url=cdp)
+            total_new = 0
+            seen_ids = db.load_seen_ids(self.name)
 
-            if result["login_redirect"]:
-                print("[linkedin] Session died mid-scrape \u2014 aborting.")
-                db.finish_run(run_id, "session_expired")
-                telegram.notify_failure(
-                    "LinkedIn session expired mid-scrape",
-                    "The browser was redirected to login while scraping."
-                    " The next run will re-login.",
-                    hint="Open chrome://inspect (target localhost:9222) if it persists",
-                )
-                return 0
+            for url in LINKEDIN_SEARCH_URLS:
+                print(f"[linkedin] Starting scrape for URL: {url}")
+                old_handler = None
+                if hasattr(signal, "SIGALRM"):
+                    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+                    signal.alarm(300)
 
-            new_count = result["new_count"]
-            blocked_names = result["blocked_names"]
+                try:
+                    result = scraper.scrape(
+                        self.selectors,
+                        cdp_url=cdp,
+                        url=url,
+                        seen_ids=seen_ids,
+                    )
 
-            if blocked_names:
-                print(
-                    f"[linkedin] Filtered out {len(blocked_names)} blocked-company"
-                    f" job(s): {', '.join(sorted(set(blocked_names)))}"
-                )
-            print(f"[linkedin] Saved {new_count} new job(s)")
+                    if result["login_redirect"]:
+                        print("[linkedin] Session died mid-scrape — aborting.")
+                        db.finish_run(run_id, "session_expired")
+                        telegram.notify_failure(
+                            "LinkedIn session expired mid-scrape",
+                            "The browser was redirected to login while scraping."
+                            " The next run will re-login.",
+                            hint="Open chrome://inspect (target localhost:9222) if it persists",
+                        )
+                        return total_new
 
-            db.finish_run(run_id, "ok", jobs_found=new_count)
-            return new_count
+                    new_count = result["new_count"]
+                    blocked_names = result["blocked_names"]
+                    total_new += new_count
+
+                    if blocked_names:
+                        print(
+                            f"[linkedin] Filtered out {len(blocked_names)} blocked-company"
+                            f" job(s): {', '.join(sorted(set(blocked_names)))}"
+                        )
+                    print(f"[linkedin] Saved {new_count} new job(s) for this URL")
+                except TimeoutException:
+                    print(f"[linkedin] URL timed out after 5 minutes: {url}")
+                    telegram.notify_failure(
+                        "LinkedIn URL timed out",
+                        f"Search URL timed out after 5 minutes:\n{url}",
+                    )
+                except Exception as e:
+                    print(f"[linkedin] Error scraping URL {url}: {e}")
+                    telegram.notify_failure("LinkedIn URL failed", f"URL: {url}\nError: {e}")
+                finally:
+                    if hasattr(signal, "SIGALRM"):
+                        signal.alarm(0)
+                        if old_handler:
+                            signal.signal(signal.SIGALRM, old_handler)
+
+            db.finish_run(run_id, "ok", jobs_found=total_new)
+            return total_new
 
         except SystemExit:
             raise

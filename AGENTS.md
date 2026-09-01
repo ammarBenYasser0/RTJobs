@@ -122,27 +122,28 @@ Required: `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_TEST_ID`
 Notable: `LINKEDIN_ENABLED` (currently `True` in `.env`), `INDEED_ENABLED`
 (now `True` in `.env`), `HEADLESS`,
 `DATA_DIR`, `MARKUP_DIR`, `CHROME_DEBUG_PORT=9222`,
-`CHECKPOINT_WAIT_SECONDS`, `MAX_LOGIN_RETRIES`, `WUZZUF_SEARCH_URL`,
+`CHECKPOINT_WAIT_SECONDS`, `MAX_LOGIN_RETRIES`,
+`LINKEDIN_SEARCH_URL` / `LINKEDIN_SEARCH_URLS` (string or JSON array),
+`WUZZUF_SEARCH_URL` / `WUZZUF_SEARCH_URLS` (string or JSON array),
+`INDEED_SEARCH_URL` / `INDEED_SEARCH_URLS` (string or JSON array),
 `*_PROFILE_DIR`, `TZ` (compose: `${TZ:-Africa/Cairo}`).
 
 ## Current state / how things were last verified
 - Docker hosting verified end-to-end on this machine: ofelia fires every
-  6 min → one-shot `rtjobs` container → LinkedIn (logged-in session in the
-  `chrome_profile` volume) + Wuzzuf scrape → SQLite + Telegram.
+  15 min → one-shot `rtjobs` container → LinkedIn (logged-in session in the
+  `chrome_profile` volume) + Wuzzuf scrape + Indeed scrape → SQLite + Telegram.
+- Multi-URL support: each board supports multiple search queries via a JSON list
+  or plain string in env vars. Each query runs in sequence with its own 5-minute
+  timeout, reusing the board's single Chrome instance and persistent profile.
 - CDP live attach verified: while a run is in progress,
   `curl http://localhost:9222/json/version` on the host returns Chrome's
   DevTools info (open localhost:9222 / chrome://inspect to drive it —
   this is how checkpoints/2FA get solved manually). Endpoint is only up
   while a run is active.
-- Wuzzuf: 15 jobs/page, enriched from SSR state, deduped, saved, notified.
-- Indeed: single sort=date search page (~15 jobs, no pagination — login-gated),
-  JSON blobs only (no CSS selectors): `window.mosaic.providerData["mosaic-provider-jobcards"]`
-  for cards + follow-up `/viewjob?jk=` fetch per NEW jobkey for the description
-  (`window._initialData` -> `hostQueryExecutionResult.data.jobData.results[0].job` —
-  NOTE the search page's two-pane blob uses the `autoOpenTwoPaneViewjobResponse.body.`
-  prefix instead; ld+json is the fallback). `pubDate` is normalized to midnight —
-  always prefer `createDate`. Verified live: CF solved via persistent profile,
-  detail cap `_MAX_DETAIL_FETCHES=10`/run (snippet placeholder when skipped).
+- Wuzzuf: 15 jobs/page, enriched from SSR state, deduped across queries, saved, notified.
+- Indeed: sort=date search page (~15 jobs, no pagination), JSON blobs only
+  (`window.mosaic.providerData["mosaic-provider-jobcards"]`), no detail page fetches
+  (stores direct `/viewjob?jk=` link + card snippet), `createDate` for timestamp.
 - LinkedIn: logged-in scraping verified (pages of 25, parsed directly from
   search cards to improve speed, dedupe against `seen_ids`); `posted_at` matches host local time.
 - Docker: python:3.13-slim + real Chrome + xvfb-run, `init: true`,
@@ -164,15 +165,11 @@ jobs, dup = _extract_jobs(html, load_board_selectors("wuzzuf"), set(), entities)
 ```
 
 ```python
-# fixtures: markup/indeed/first_page.html (search page capture),
-#           markup/indeed/newjob_sample.html (one viewjob page capture)
-from boards.indeed.scraper import _extract_jobs, _extract_detail
+# fixtures: markup/indeed/first_page.html (search page capture)
+from boards.indeed.scraper import _extract_jobs
 search = open("markup/indeed/first_page.html", encoding="utf-8").read()
 jobs, seen, missing = _extract_jobs(search, set())
-# expect: 15 jobs, missing=False, posted_at from createDate (pubDate is midnight-normalized)
-view = open("markup/indeed/newjob_sample.html", encoding="utf-8").read()
-desc, extra = _extract_detail(view)
-# expect: non-empty desc, extra['latitude']/['longitude']
+# expect: 15 jobs, missing=False, description=snippet, posted_at from createDate
 ```
 Set dummy env before importing config in test scripts:
 `TELEGRAM_TOKEN=x TELEGRAM_CHAT_ID=1 TELEGRAM_TEST_ID=2 DATA_DIR=<tmp> MARKUP_DIR=<repo>/markup`.

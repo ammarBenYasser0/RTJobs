@@ -5,23 +5,17 @@ INDEED.md) and embeds all its data as JSON inside <script> tags, so we fetch
 the search page through a stealth browser session with solve_cloudflare=True
 and parse the blobs — no CSS selectors needed.
 
-Data sources:
-1. Search page: `window.mosaic.providerData["mosaic-provider-jobcards"]`
-   -> metaData.mosaicProviderJobCardsModel.results — one dict per job card
-   (jobkey, displayTitle, company, formattedLocation, extractedSalary,
-   jobTypes, pubDate in unix ms, snippet, viewJobLink).
-2. View job page (followed per NEW jobkey only):
-   - `window._initialData` -> ...jobData.results[0].job.description.text
-     (clean plain-text description, latitude/longitude) — PRIMARY
-   - <script type="application/ld+json"> (Schema.org JobPosting) — fallback
-     with HTML description + baseSalary.
+Data source:
+Search page: `window.mosaic.providerData["mosaic-provider-jobcards"]`
+-> metaData.mosaicProviderJobCardsModel.results — one dict per job card
+(jobkey, displayTitle, company, formattedLocation, extractedSalary,
+jobTypes, pubDate in unix ms, snippet, viewJobLink).
 
-Single search URL, sort=date, NO pagination (pagination is login-gated).
+Single search URL per query, sort=date, NO pagination (pagination is login-gated),
+and NO detail-page fetching (stores direct viewjob link + card snippet).
 """
 
-import asyncio
 import json
-import random
 import re
 from datetime import datetime
 
@@ -29,22 +23,13 @@ from scrapling import Selector
 from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
-from config import INDEED_SEARCH_URL
 from core import blocklist, db, markup, telegram
 from core.browser import patch_no_load_wait
 
 _BASE_URL = "https://eg.indeed.com"
 
-# Cap per run: each new job means one extra detail-page navigation.
-_MAX_DETAIL_FETCHES = 10
-
 _CARDS_MARKER = re.compile(
     r'window\.mosaic\.providerData\[\'?"?mosaic-provider-jobcards\'?"?\]\s*=\s*'
-)
-_VIEWJOB_MARKER = re.compile(r"window\._initialData\s*=\s*")
-_LDJSON = re.compile(
-    r'<script[^>]*type=[\'"]application/ld\+json[\'"][^>]*>(.*?)</script>',
-    re.DOTALL,
 )
 
 
@@ -131,11 +116,6 @@ def _parse_pubdate(value) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-def _jobkey_from_url(url: str) -> str:
-    m = re.search(r"[?&]jk=([^&]+)", url or "")
-    return m.group(1) if m else ""
-
-
 def _extract_jobs(html: str, seen_ids: set) -> tuple[list, int, bool]:
     """Parse the search-page job cards blob.
 
@@ -203,8 +183,6 @@ def _extract_jobs(html: str, seen_ids: set) -> tuple[list, int, bool]:
                 "posted_at": _parse_pubdate(
                     item.get("createDate") or item.get("pubDate")
                 ),
-                # Placeholder: upgraded to the full description when the
-                # viewjob page is fetched (see scan_detail_page).
                 "description": snippet,
                 "link": f"{_BASE_URL}/viewjob?jk={key}",
                 "extra": extra,
@@ -215,106 +193,16 @@ def _extract_jobs(html: str, seen_ids: set) -> tuple[list, int, bool]:
     return jobs, seen, False
 
 
-def _ldjson_objects(html: str):
-    """Yield parsed JSON from every application/ld+json script block."""
-    for m in _LDJSON.finditer(html or ""):
-        try:
-            obj = json.loads(m.group(1))
-        except (ValueError, TypeError):
-            continue
-        if isinstance(obj, dict):
-            yield obj
-        elif isinstance(obj, list):
-            yield from (o for o in obj if isinstance(o, dict))
-
-
-def _extract_detail(html: str) -> tuple[str, dict]:
-    """Parse a viewjob page. Returns (description, extra dict).
-
-    PRIMARY: window._initialData -> jobData.results[0].job.description
-    (.text, else .html stripped) + latitude/longitude. The results list
-    sits under hostQueryExecutionResult.data.jobData.results on the
-    viewjob page itself, and under
-    autoOpenTwoPaneViewjobResponse.body.hostQueryExecutionResult... on the
-    search page's two-pane blob — try both.
-    FALLBACK: Schema.org JobPosting ld+json (HTML description + baseSalary).
-    """
-    extra: dict = {}
-    data = _extract_balanced_json(html, _VIEWJOB_MARKER)
-
-    if data:
-        job = None
-        for base in (
-            _dig(data, "hostQueryExecutionResult", "data", "jobData", "results"),
-            _dig(
-                data,
-                "autoOpenTwoPaneViewjobResponse",
-                "body",
-                "hostQueryExecutionResult",
-                "data",
-                "jobData",
-                "results",
-            ),
-        ):
-            if isinstance(base, list) and base and isinstance(base[0], dict):
-                job = base[0].get("job")
-                break
-
-        if isinstance(job, dict):
-            desc = job.get("description") or {}
-            text = _clean(desc.get("text"))
-            if not text and desc.get("html"):
-                text = _strip_html(desc["html"])
-
-            geo = job.get("location") or {}
-            if isinstance(geo, dict):
-                if geo.get("latitude") is not None:
-                    extra["latitude"] = geo["latitude"]
-                if geo.get("longitude") is not None:
-                    extra["longitude"] = geo["longitude"]
-
-            if text:
-                return text, extra
-
-    # Fallback: Schema.org JobPosting block (prefer the typed one).
-    ld_obj = None
-    for obj in _ldjson_objects(html):
-        types = obj.get("@type")
-        if isinstance(types, list) and "JobPosting" in types or types == "JobPosting":
-            ld_obj = obj
-            break
-        if ld_obj is None:
-            ld_obj = obj
-    if ld_obj:
-        desc = _strip_html(ld_obj.get("description"))
-        if desc:
-            return desc, extra
-        base = _dig(ld_obj, "baseSalary", "value")
-        if isinstance(base, dict) and (
-            base.get("minValue") is not None or base.get("maxValue") is not None
-        ):
-            extra["salary"] = {
-                "min": base.get("minValue"),
-                "max": base.get("maxValue"),
-                "currency": _dig(ld_obj, "baseSalary", "currency"),
-            }
-
-    return "", extra
-
-
 class IndeedJobSpider(Spider):
     name = "indeed_job_spider"
 
-    def __init__(self, selectors: dict, cdp_url: str, *args, **kwargs):
+    def __init__(self, selectors: dict, cdp_url: str, url: str, seen_ids: set | None = None, *args, **kwargs):
         self.sel = selectors  # unused — data comes from JSON blobs, kept for parity
         self.cdp_url = cdp_url
-        self.seen_ids = db.load_seen_ids("indeed")
+        self.url = url
+        self.seen_ids = seen_ids if seen_ids is not None else db.load_seen_ids("indeed")
 
         self._page_jobs: list[dict] = []
-        self._pending: dict[str, dict] = {}  # jobkey -> placeholder job
-        self._detail_jobs: dict[str, dict] = {}  # jobkey -> enriched job
-        self._queued: set[str] = set()
-        self._detail_snapshots = 0
         self._new_count: int = 0
         self._blocked_names: list[str] = []
 
@@ -333,7 +221,7 @@ class IndeedJobSpider(Spider):
 
     async def start_requests(self):
         yield Request(
-            INDEED_SEARCH_URL,
+            self.url,
             callback=self.parse,
             sid="stealth",
             page_action=self.scan_search_page,
@@ -366,36 +254,7 @@ class IndeedJobSpider(Spider):
         if blob_missing and not jobs:
             markup.save_snapshot("indeed", "search_empty", html)
 
-    async def scan_detail_page(self, page):
-        key = _jobkey_from_url(page.url)
-        job = self._pending.get(key)
-        if job is None:
-            return
-
-        await asyncio.sleep(random.uniform(1.5, 3.0))  # human-like pacing
-
-        try:
-            html = await page.content()
-        except Exception as e:
-            print(f"[indeed] Detail read failed for {key}: {e}")
-            html = ""
-
-        desc, extra = _extract_detail(html)
-        if desc:
-            job["description"] = desc
-        else:
-            print(f"[indeed] No description parsed for {key}")
-            if self._detail_snapshots < 2:
-                markup.save_snapshot("indeed", "detail_no_desc", html)
-                self._detail_snapshots += 1
-        for field, value in extra.items():
-            job["extra"].setdefault(field, value)
-
-        self._detail_jobs[key] = job
-
     async def parse(self, response: Response):
-        # Persist + notify this page's jobs immediately with snippet
-        # descriptions, so they're not lost if detail-fetches hang.
         for job in self._page_jobs:
             if blocklist.is_blocked(job["source"], job.get("company") or ""):
                 db.mark_seen(job["source"], job["external_id"])
@@ -403,39 +262,17 @@ class IndeedJobSpider(Spider):
                 continue
             db.save_job(job)
             self._new_count += 1
+            yield job
 
         if self._page_jobs:
             sent = telegram.notify_jobs(db.get_unnotified("indeed"))
             if sent:
                 print(f"[indeed] Notified {sent} job(s)")
 
-        # Now yield detail-page requests for enrichment.
-        for job in self._page_jobs:
-            key = job["external_id"]
-            if key in self._queued or len(self._queued) >= _MAX_DETAIL_FETCHES:
-                print(f"[indeed] Detail fetch skipped for {key} (cap reached)")
-                yield job
-                continue
 
-            self._pending[key] = job
-            self._queued.add(key)
-            yield Request(
-                f"{_BASE_URL}/viewjob?jk={key}",
-                callback=self.parse_job_detail,
-                sid="stealth",
-                page_action=self.scan_detail_page,
-            )
-
-    async def parse_job_detail(self, response: Response):
-        key = _jobkey_from_url(response.url)
-        job = self._detail_jobs.pop(key, None)
-        if job is not None:
-            yield job
-
-
-def scrape(selectors: dict, cdp_url: str) -> dict:
+def scrape(selectors: dict, cdp_url: str, url: str, seen_ids: set | None = None) -> dict:
     """Run the spider and return results including incremental counts."""
-    spider = IndeedJobSpider(selectors=selectors, cdp_url=cdp_url)
+    spider = IndeedJobSpider(selectors=selectors, cdp_url=cdp_url, url=url, seen_ids=seen_ids)
     result = spider.start()
     items = list(result.items)
     print(

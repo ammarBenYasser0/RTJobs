@@ -23,7 +23,6 @@ from scrapling import Selector
 from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
-from config import WUZZUF_SEARCH_URL
 from core import blocklist, db, markup, telegram
 from core.browser import patch_no_load_wait
 
@@ -250,10 +249,11 @@ def _extract_jobs(html, selectors, seen_ids, entities: dict | None = None) -> tu
 class WuzzufJobSpider(Spider):
     name = "wuzzuf_job_spider"
 
-    def __init__(self, selectors: dict, cdp_url: str, *args, **kwargs):
+    def __init__(self, selectors: dict, cdp_url: str, url: str, seen_ids: set | None = None, *args, **kwargs):
         self.sel = selectors
         self.cdp_url = cdp_url
-        self.seen_ids = db.load_seen_ids("wuzzuf")
+        self.url = url
+        self.seen_ids = seen_ids if seen_ids is not None else db.load_seen_ids("wuzzuf")
         self._page_jobs: list[dict] = []
         self._repeat_found: bool = False
         self._new_count: int = 0
@@ -273,7 +273,7 @@ class WuzzufJobSpider(Spider):
 
     async def start_requests(self):
         yield Request(
-            WUZZUF_SEARCH_URL,
+            self.url,
             callback=self.parse,
             sid="stealth",
             page_action=self.scan_page,
@@ -357,9 +357,9 @@ class WuzzufJobSpider(Spider):
         )
 
 
-def scrape(selectors: dict, cdp_url: str) -> dict:
+def scrape(selectors: dict, cdp_url: str, url: str, seen_ids: set | None = None) -> dict:
     """Run the spider and return results including incremental counts."""
-    spider = WuzzufJobSpider(selectors=selectors, cdp_url=cdp_url)
+    spider = WuzzufJobSpider(selectors=selectors, cdp_url=cdp_url, url=url, seen_ids=seen_ids)
     result = spider.start()
     items = list(result.items)
     print(
