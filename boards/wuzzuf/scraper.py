@@ -283,13 +283,13 @@ class WuzzufJobSpider(Spider):
         self._page_jobs = []
 
         try:
+            # Wait for either job titles to appear or the main results/empty container
             await page.wait_for_selector(
-                self.sel["search"]["title_link"], timeout=45_000
+                f"{self.sel['search']['title_link']}, .css-13hf9up, .css-bd6bxo, #app",
+                timeout=20_000,
             )
         except Exception as e:
-            print(f"[wuzzuf] Job list never appeared: {e}")
-            markup.save_snapshot("wuzzuf", "search_failed", await page.content())
-            return
+            print(f"[wuzzuf] Page content wait: {e}")
 
         html = await page.content()
         entities = _extract_state(html)
@@ -309,7 +309,8 @@ class WuzzufJobSpider(Spider):
             self._repeat_found = True
 
         if not jobs and not found_duplicate:
-            markup.save_snapshot("wuzzuf", "search_empty", html)
+            if "0</b> Jobs found" not in html and "0 Jobs found" not in html and "No results found" not in html:
+                markup.save_snapshot("wuzzuf", "search_empty", html)
 
     async def parse(self, response: Response):
         for job in self._page_jobs:
