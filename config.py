@@ -11,22 +11,31 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _parse_url_list(val: str | None, default: str) -> list[str]:
-    """Accept a plain URL string or a JSON list of URLs from env.
+def _parse_url_list(val: str | list | None, *defaults: str | list[str]) -> list[str]:
+    """Accept a plain URL string, a JSON list of URLs from env, or variable default URLs.
     Single-string values (existing .env files) are returned as a one-element list.
     """
-    raw = (val or "").strip()
-    if not raw:
-        raw = default
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, list):
-            return [str(u).strip() for u in parsed if str(u).strip()]
-        if isinstance(parsed, str) and parsed.strip():
-            return [parsed.strip()]
-    except (ValueError, TypeError):
-        pass
-    return [raw]
+    raw = (val or "").strip() if isinstance(val, str) else ""
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(u).strip() for u in parsed if str(u).strip()]
+            if isinstance(parsed, str) and parsed.strip():
+                return [parsed.strip()]
+        except (ValueError, TypeError):
+            pass
+        return [raw]
+
+    results: list[str] = []
+    for d in defaults:
+        if isinstance(d, (list, tuple)):
+            for item in d:
+                if str(item).strip():
+                    results.append(str(item).strip())
+        elif isinstance(d, str) and d.strip():
+            results.append(d.strip())
+    return results
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -58,7 +67,9 @@ KILL_CHROME_ON_START = os.environ.get("KILL_CHROME_ON_START", "false").lower() =
 LINKEDIN_ENABLED = os.environ.get("LINKEDIN_ENABLED", "true").lower() == "true"
 LINKEDIN_SEARCH_URLS = _parse_url_list(
     os.environ.get("LINKEDIN_SEARCH_URLS") or os.environ.get("LINKEDIN_SEARCH_URL"),
-    "https://www.linkedin.com/jobs/search/?currentJobId=4402032460&f_TPR=r7200&geoId=106155005&keywords=frontend%20developer&origin=JOB_SEARCH_PAGE_JOB_FILTER&refresh=true",
+    "https://www.linkedin.com/jobs/search/?currentJobId=4402032460&f_TPR=r7200&geoId=106155005&keywords=frontend%20developer&origin=JOB_SEARCH_PAGE_JOB_FILTER&refresh=true&location=egypt",
+    "https://www.linkedin.com/jobs/search/?currentJobId=4402032460&f_TPR=r7200&geoId=106155005&keywords=frontend%20developer&origin=JOB_SEARCH_PAGE_JOB_FILTER&refresh=true&location=EMEA",
+    "https://www.linkedin.com/jobs/search/?currentJobId=4402032460&f_TPR=r7200&geoId=106155005&keywords=frontend%20developer&origin=JOB_SEARCH_PAGE_JOB_FILTER&refresh=true&location=saudi%20arabia",
 )
 # Landing page for login: already-logged-in sessions get redirected to the
 # feed; logged-out ones get the credential form directly.
@@ -89,6 +100,7 @@ INDEED_ENABLED = os.environ.get("INDEED_ENABLED", "false").lower() == "true"
 INDEED_SEARCH_URLS = _parse_url_list(
     os.environ.get("INDEED_SEARCH_URLS") or os.environ.get("INDEED_SEARCH_URL"),
     "https://eg.indeed.com/jobs?q=frontend&l=egypt&sort=date&fromage=1&from=searchOnDesktopSerp&vjk=e6100dd5bfdeb85f",
+    "https://sa.indeed.com/jobs?q=front+end+developer&l=&sort=date&fromage=1&from=searchOnDesktopSerp&vjk=efbb0a53af679573"
 )
 INDEED_PROFILE_DIR = os.path.abspath(
     os.environ.get("INDEED_PROFILE_DIR", "./indeedprofile")
