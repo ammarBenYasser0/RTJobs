@@ -7,32 +7,70 @@ cd "$(dirname "$0")" || exit 1
 echo "=== RTJobs Status ==="
 echo ""
 
-echo "[1/3] Recent Scraper Runs (Last 5):"
+echo "[1/3] Scraper Runs (Last 24 Hours):"
 docker compose run --quiet --rm scraper python -c "
 import sqlite3
+from datetime import datetime, timedelta
+
 try:
     c = sqlite3.connect('/data/rtjobs.db')
-    runs = c.execute('SELECT source, status, jobs_found, error, started_at, finished_at FROM runs ORDER BY id DESC LIMIT 5').fetchall()
-    print(f'{'SOURCE':<10} | {'STATUS':<10} | {'JOBS':<5} | {'STARTED':<20} | {'FINISHED':<20} | ERROR')
-    print('-' * 95)
+    c.row_factory = sqlite3.Row
+    try:
+        c.execute("ALTER TABLE runs ADD COLUMN url TEXT")
+    except Exception:
+        pass
+
+    cutoff = (datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
+
+    runs = c.execute(
+        'SELECT source, url, status, jobs_found, error, started_at, finished_at '
+        'FROM runs WHERE started_at >= ? ORDER BY id DESC LIMIT 20',
+        (cutoff,)
+    ).fetchall()
+
+    if not runs:
+        runs = c.execute(
+            'SELECT source, url, status, jobs_found, error, started_at, finished_at '
+            'FROM runs ORDER BY id DESC LIMIT 10'
+        ).fetchall()
+        if runs:
+            print('(No runs in last 24h — showing latest 10 runs)')
+
+    print(f'{\"SOURCE\":<10} | {\"STATUS\":<10} | {\"JOBS\":<5} | {\"STARTED\":<20} | {\"LINK / QUERY\":<45} | ERROR')
+    print('-' * 115)
     for r in runs:
-        error_msg = r[3] if r[3] else '-'
-        print(f'{r[0]:<10} | {r[1]:<10} | {str(r[2]):<5} | {str(r[4]):<20} | {str(r[5]):<20} | {error_msg}')
+        url_str = r['url'] or '-'
+        if len(url_str) > 45:
+            url_str = url_str[:42] + '...'
+        error_msg = r['error'] if r['error'] else '-'
+        print(f'{r[\"source\"]:<10} | {r[\"status\"]:<10} | {str(r[\"jobs_found\"]):<5} | {str(r[\"started_at\"] or \"\"):<20} | {url_str:<45} | {error_msg}')
 except Exception as e:
-    print('Error reading DB. Make sure the container is running and the DB is initialized.')
+    print(f'Error reading DB runs: {e}')
 "
 
 echo ""
-echo "[2/3] Total Jobs Found & Notified:"
+echo "[2/3] Jobs Found & Notified per Platform (Last 24 Hours & Total):"
 docker compose run --quiet --rm scraper python -c "
 import sqlite3
+from datetime import datetime, timedelta
+
 try:
     c = sqlite3.connect('/data/rtjobs.db')
-    jobs = c.execute('SELECT source, count(*) FROM jobs GROUP BY source').fetchall()
-    for j in jobs:
-        print(f'- {j[0]}: {j[1]} total jobs')
-except Exception:
-    pass
+    cutoff = (datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
+
+    totals = dict(c.execute('SELECT source, count(*) FROM jobs GROUP BY source').fetchall())
+    recent = dict(c.execute('SELECT source, count(*) FROM jobs WHERE scraped_at >= ? GROUP BY source', (cutoff,)).fetchall())
+
+    all_sources = sorted(set(totals.keys()) | set(recent.keys()))
+    if all_sources:
+        for s in all_sources:
+            rec_count = recent.get(s, 0)
+            tot_count = totals.get(s, 0)
+            print(f'- {s}: {rec_count} new in last 24h ({tot_count} total stored)')
+    else:
+        print('No jobs found in database yet.')
+except Exception as e:
+    print(f'Error reading DB jobs: {e}')
 "
 
 echo ""

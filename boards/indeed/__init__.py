@@ -38,8 +38,6 @@ class IndeedBoard(JobBoard):
     enabled = INDEED_ENABLED
 
     def run(self) -> int:
-        run_id = db.start_run(self.name)
-
         # Same Chrome/CDP model as the other boards: we launch it so the
         # session is live-attachable on the debug port; the spider connects
         # to it. The persistent profile keeps the Cloudflare clearance
@@ -55,6 +53,7 @@ class IndeedBoard(JobBoard):
         try:
             for url in INDEED_SEARCH_URLS:
                 print(f"[indeed] Starting scrape for URL: {url}")
+                run_id = db.start_run(self.name, url=url)
                 old_handler = None
                 if hasattr(signal, "SIGALRM"):
                     old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
@@ -78,14 +77,17 @@ class IndeedBoard(JobBoard):
                             f" job(s): {', '.join(sorted(set(blocked_names)))}"
                         )
                     print(f"[indeed] Saved {new_count} new job(s) for this URL")
+                    db.finish_run(run_id, "ok", jobs_found=new_count)
                 except TimeoutException:
                     print(f"[indeed] URL timed out after 5 minutes: {url}")
+                    db.finish_run(run_id, "timeout", error="5m timeout")
                     telegram.notify_failure(
                         "Indeed URL timed out",
                         f"Search URL timed out after 5 minutes:\n{url}",
                     )
                 except Exception as e:
                     print(f"[indeed] Error scraping URL {url}: {e}")
+                    db.finish_run(run_id, "error", error=str(e))
                     telegram.notify_failure("Indeed URL failed", f"URL: {url}\nError: {e}")
                 finally:
                     if hasattr(signal, "SIGALRM"):
@@ -93,11 +95,9 @@ class IndeedBoard(JobBoard):
                         if old_handler:
                             signal.signal(signal.SIGALRM, old_handler)
 
-            db.finish_run(run_id, "ok", jobs_found=total_new)
             return total_new
 
         except Exception as e:
-            db.finish_run(run_id, "error", error=str(e))
             telegram.notify_failure("Indeed board failed", str(e))
             print(f"[indeed] Run failed: {e}")
             return 0

@@ -34,8 +34,6 @@ class WuzzufBoard(JobBoard):
     enabled = True
 
     def run(self) -> int:
-        run_id = db.start_run(self.name)
-
         # Same Chrome/CDP model as LinkedIn: we launch it so the session is
         # live-attachable on the debug port, and the spider connects to it.
         # The persistent profile keeps the Cloudflare clearance cookie.
@@ -50,6 +48,7 @@ class WuzzufBoard(JobBoard):
         try:
             for url in WUZZUF_SEARCH_URLS:
                 print(f"[wuzzuf] Starting scrape for URL: {url}")
+                run_id = db.start_run(self.name, url=url)
                 old_handler = None
                 if hasattr(signal, "SIGALRM"):
                     old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
@@ -73,14 +72,17 @@ class WuzzufBoard(JobBoard):
                             f" job(s): {', '.join(sorted(set(blocked_names)))}"
                         )
                     print(f"[wuzzuf] Saved {new_count} new job(s) for this URL")
+                    db.finish_run(run_id, "ok", jobs_found=new_count)
                 except TimeoutException:
                     print(f"[wuzzuf] URL timed out after 5 minutes: {url}")
+                    db.finish_run(run_id, "timeout", error="5m timeout")
                     telegram.notify_failure(
                         "Wuzzuf URL timed out",
                         f"Search URL timed out after 5 minutes:\n{url}",
                     )
                 except Exception as e:
                     print(f"[wuzzuf] Error scraping URL {url}: {e}")
+                    db.finish_run(run_id, "error", error=str(e))
                     telegram.notify_failure("Wuzzuf URL failed", f"URL: {url}\nError: {e}")
                 finally:
                     if hasattr(signal, "SIGALRM"):
@@ -88,11 +90,9 @@ class WuzzufBoard(JobBoard):
                         if old_handler:
                             signal.signal(signal.SIGALRM, old_handler)
 
-            db.finish_run(run_id, "ok", jobs_found=total_new)
             return total_new
 
         except Exception as e:
-            db.finish_run(run_id, "error", error=str(e))
             telegram.notify_failure("Wuzzuf board failed", str(e))
             print(f"[wuzzuf] Run failed: {e}")
             return 0
