@@ -60,11 +60,21 @@ def format_label(source: str, url: str) -> str:
     except Exception:
         return source.capitalize()
 
+def format_time(ts_str: str) -> str:
+    if not ts_str:
+        return "-"
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(ts_str, fmt).strftime("%Y-%m-%d %I:%M:%S %p")
+        except (ValueError, TypeError):
+            pass
+    return ts_str
+
 try:
     c = sqlite3.connect('/data/rtjobs.db')
     c.row_factory = sqlite3.Row
     try:
-        c.execute(\"ALTER TABLE runs ADD COLUMN url TEXT\")
+        c.execute("ALTER TABLE runs ADD COLUMN url TEXT")
     except Exception:
         pass
 
@@ -84,12 +94,13 @@ try:
         if runs:
             print('(No runs in last 24h — showing latest 10 runs)')
 
-    print(f'{\"TARGET / QUERY\":<30} | {\"STATUS\":<10} | {\"JOBS\":<5} | {\"STARTED\":<20} | ERROR')
-    print('-' * 85)
+    print(f'{"TARGET / QUERY":<30} | {"STATUS":<10} | {"JOBS":<5} | {"STARTED":<23} | ERROR')
+    print('-' * 88)
     for r in runs:
         label = format_label(r['source'], r['url'])
         error_msg = r['error'] if r['error'] else '-'
-        print(f'{label:<30} | {r[\"status\"]:<10} | {str(r[\"jobs_found\"]):<5} | {str(r[\"started_at\"] or \"\"):<20} | {error_msg}')
+        started_time = format_time(r['started_at'])
+        print(f'{label:<30} | {r["status"]:<10} | {str(r["jobs_found"]):<5} | {started_time:<23} | {error_msg}')
 except Exception as e:
     print(f'Error reading DB runs: {e}')
 "
