@@ -102,6 +102,28 @@ INDEED_PROFILE_DIR = os.path.abspath(
 )
 
 # ---------------------------------------------------------------------------
+# Workable
+# ---------------------------------------------------------------------------
+WORKABLE_ENABLED = os.environ.get("WORKABLE_ENABLED", "false").lower() == "true"
+WORKABLE_SEARCH_URLS = _parse_url_list(
+    os.environ.get("WORKABLE_SEARCH_URLS") or os.environ.get("WORKABLE_SEARCH_URL")
+)
+WORKABLE_PROFILE_DIR = os.path.abspath(
+    os.environ.get("WORKABLE_PROFILE_DIR", "./workableprofile")
+)
+
+# ---------------------------------------------------------------------------
+# Tanqeeb
+# ---------------------------------------------------------------------------
+TANQEEB_ENABLED = os.environ.get("TANQEEB_ENABLED", "false").lower() == "true"
+TANQEEB_SEARCH_URLS = _parse_url_list(
+    os.environ.get("TANQEEB_SEARCH_URLS") or os.environ.get("TANQEEB_SEARCH_URL")
+)
+TANQEEB_PROFILE_DIR = os.path.abspath(
+    os.environ.get("TANQEEB_PROFILE_DIR", "./tanqeebprofile")
+)
+
+# ---------------------------------------------------------------------------
 # Telegram
 # ---------------------------------------------------------------------------
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]

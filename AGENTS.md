@@ -35,6 +35,8 @@ boards/base.py           JobBoard ABC + load_board_selectors()
 boards/linkedin/         login.py (state machine) + scraper.py (Spider)
 boards/wuzzuf/           scraper.py (Spider, solve_cloudflare=True)
 boards/indeed/           scraper.py (Spider, solve_cloudflare=True) — see INDEED.md
+boards/workable/         scraper.py (Spider, solve_cloudflare=True) — JSON blobs
+boards/tanqeeb/          scraper.py (Spider) — DOM rendered cards
 markup/<site>/selectors.json   ALL CSS selectors live here, never in code
 ```
 Job dict shape everywhere: `source, external_id, title, company, posted_at,
@@ -120,12 +122,14 @@ Required: `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_TEST_ID`
 (failure channel; override: `TELEGRAM_FAILURE_CHAT_ID`),
 `LINKEDIN_EMAIL`, `LINKEDIN_PASSWORD`.
 Notable: `LINKEDIN_ENABLED` (currently `True` in `.env`), `INDEED_ENABLED`
-(now `True` in `.env`), `HEADLESS`,
+(now `True` in `.env`), `WORKABLE_ENABLED`, `TANQEEB_ENABLED`, `HEADLESS`,
 `DATA_DIR`, `MARKUP_DIR`, `CHROME_DEBUG_PORT=9222`,
 `CHECKPOINT_WAIT_SECONDS`, `MAX_LOGIN_RETRIES`,
 `LINKEDIN_SEARCH_URL` / `LINKEDIN_SEARCH_URLS` (string or JSON array),
 `WUZZUF_SEARCH_URL` / `WUZZUF_SEARCH_URLS` (string or JSON array),
 `INDEED_SEARCH_URL` / `INDEED_SEARCH_URLS` (string or JSON array),
+`WORKABLE_SEARCH_URL` / `WORKABLE_SEARCH_URLS` (string or JSON array),
+`TANQEEB_SEARCH_URL` / `TANQEEB_SEARCH_URLS` (string or JSON array),
 `*_PROFILE_DIR`, `TZ` (compose: `${TZ:-Africa/Cairo}`).
 
 ## Current state / how things were last verified
@@ -144,12 +148,16 @@ Notable: `LINKEDIN_ENABLED` (currently `True` in `.env`), `INDEED_ENABLED`
 - Indeed: sort=date search page (~15 jobs, no pagination), JSON blobs only
   (`window.mosaic.providerData["mosaic-provider-jobcards"]`), no detail page fetches
   (stores direct `/viewjob?jk=` link + card snippet), `createDate` for timestamp.
+- Workable: search page JSON blob (`initialState["api/v1/jobs"]["data"]["jobs"]`), full
+  HTML description and requirements in search state, no pagination, `solve_cloudflare=True`.
+- Tanqeeb: search page rendered cards (`div.search-job-card`), selectors in
+  `markup/tanqeeb/selectors.json`, no pagination for v1, relative date parsing (`_parse_ago`).
 - LinkedIn: logged-in scraping verified (pages of 25, parsed directly from
   search cards to improve speed, dedupe against `seen_ids`); `posted_at` matches host local time.
 - Docker: python:3.13-slim + real Chrome + xvfb-run, `init: true`,
   standard port mapping `9222:9222` on the scraper; volumes `chrome_profile`,
-  `wuzzuf_profile`, `scraper_data`; `./markup` bind-mounted to
-  `/data/markup`.
+  `wuzzuf_profile`, `indeed_profile`, `workable_profile`, `tanqeeb_profile`,
+  `scraper_data`; `./markup` bind-mounted to `/data/markup`.
 
 ## Offline testing (do this after ANY parsing/selector change)
 ```python
@@ -170,6 +178,23 @@ from boards.indeed.scraper import _extract_jobs
 search = open("markup/indeed/first_page.html", encoding="utf-8").read()
 jobs, seen, missing = _extract_jobs(search, set())
 # expect: 15 jobs, missing=False, description=snippet, posted_at from createDate
+```
+
+```python
+# fixtures: markup/workable/first_page.html (search page capture)
+from boards.workable.scraper import _extract_jobs
+search = open("markup/workable/first_page.html", encoding="utf-8").read()
+jobs, seen, missing = _extract_jobs(search, set())
+# expect: 13 jobs, missing=False, workplace set
+```
+
+```python
+# fixtures: markup/tanqeeb/first_page.html (search page capture)
+from boards.tanqeeb.scraper import _extract_jobs
+from boards.base import load_board_selectors
+search = open("markup/tanqeeb/first_page.html", encoding="utf-8").read()
+jobs, seen, empty = _extract_jobs(search, load_board_selectors("tanqeeb"), set())
+# expect: >= 1 jobs, empty=False
 ```
 Set dummy env before importing config in test scripts:
 `TELEGRAM_TOKEN=x TELEGRAM_CHAT_ID=1 TELEGRAM_TEST_ID=2 DATA_DIR=<tmp> MARKUP_DIR=<repo>/markup`.
