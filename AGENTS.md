@@ -1,11 +1,12 @@
 # AGENTS.md — RTJobs
 
 ## What this is
-Headful job-board scraper. Scrapes LinkedIn (login-gated) and Wuzzuf
-(Cloudflare-gated) via [scrapling](https://scrapling.readthedocs.io) stealth
+Headful job-board scraper. Scrapes LinkedIn (login-gated), Wuzzuf
+(Cloudflare-gated), Indeed (Cloudflare-gated), Workable (JSON-state),
+and Tanqeeb (DOM-rendered) via [scrapling](https://scrapling.readthedocs.io) stealth
 browser sessions, persists jobs to SQLite, posts new jobs to one Telegram
 channel and failure alerts to another. Scheduled in Docker via ofelia
-(every 6 min). Chrome runs headful under Xvfb with CDP on port 9222 for
+(every 15 min). Chrome runs headful under Xvfb with CDP on port 9222 for
 live debugging / manual 2FA solves.
 
 ## Commands
@@ -16,6 +17,7 @@ python main.py --reset-login        # clear LinkedIn retry/cooldown state
 python -m py_compile <files...>     # no linter/typechecker configured — compile check + offline tests are the verification loop
 docker compose up -d --build        # scheduled container run (ofelia)
 docker compose logs -f scraper
+./status.sh                         # check runs (last 50, 12h format), today's jobs, and health (status.ps1 on Windows)
 ```
 There is NO test framework. Verification = ad-hoc offline scripts that run
 extraction/parsing functions against the fixture files in `markup/` (see
@@ -38,6 +40,7 @@ boards/indeed/           scraper.py (Spider, solve_cloudflare=True) — see INDE
 boards/workable/         scraper.py (Spider, solve_cloudflare=True) — JSON blobs
 boards/tanqeeb/          scraper.py (Spider) — DOM rendered cards
 markup/<site>/selectors.json   ALL CSS selectors live here, never in code
+status.sh / status.ps1   CLI dashboard: recent runs (50 rows, 12h format), today's jobs, health
 ```
 Job dict shape everywhere: `source, external_id, title, company, posted_at,
 description, link, extra(dict), scraped_at`.
@@ -116,6 +119,18 @@ description, link, extra(dict), scraped_at`.
 10. `.env` must NEVER be committed (it was once — the old remote was
     replaced with a single fresh root commit; treat secrets as rotated).
     It is gitignored; untracked.
+11. **Docker env-file and build context gotchas**:
+    a. Docker CLI's `--env-file` (and docker compose env-file) splits strictly
+       on newlines and DOES NOT strip enclosing quotes. Multi-line values
+       (like formatted JSON arrays) truncate at the first newline (e.g.
+       `URLS=[` assigns `[`). All `*_SEARCH_URLS` entries in `.env` must be
+       formatted on a single line. `config.py:_parse_url_list` also strips
+       enclosing single/double quotes defensively.
+    b. Headful Chrome running in container volumes creates Linux domain
+       sockets and locks (e.g. `SingletonCookie`, `SingletonLock`). On Windows
+       Docker Desktop, copying these into the build context during `docker build`
+       causes `invalid file request` build failures. `.dockerignore` must
+       exclude `*profile/`, `.venv/`, and `*.db`.
 
 ## Env vars (see config.py / README for defaults)
 Required: `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_TEST_ID`
@@ -135,7 +150,7 @@ Notable: `LINKEDIN_ENABLED` (currently `True` in `.env`), `INDEED_ENABLED`
 ## Current state / how things were last verified
 - Docker hosting verified end-to-end on this machine: ofelia fires every
   15 min → one-shot `rtjobs` container → LinkedIn (logged-in session in the
-  `chrome_profile` volume) + Wuzzuf scrape + Indeed scrape → SQLite + Telegram.
+  `chrome_profile` volume) + Wuzzuf + Indeed + Workable + Tanqeeb → SQLite + Telegram.
 - Multi-URL support: each board supports multiple search queries via a JSON list
   or plain string in env vars. Each query runs in sequence with its own 5-minute
   timeout, reusing the board's single Chrome instance and persistent profile.
@@ -151,9 +166,13 @@ Notable: `LINKEDIN_ENABLED` (currently `True` in `.env`), `INDEED_ENABLED`
 - Workable: search page JSON blob (`initialState["api/v1/jobs"]["data"]["jobs"]`), full
   HTML description and requirements in search state, no pagination, `solve_cloudflare=True`.
 - Tanqeeb: search page rendered cards (`div.search-job-card`), selectors in
-  `markup/tanqeeb/selectors.json`, no pagination for v1, relative date parsing (`_parse_ago`).
+  `markup/tanqeeb/selectors.json`, no pagination for v1, relative date parsing (`_parse_ago`),
+  verified live across Egypt & Saudi queries with Telegram notifications.
 - LinkedIn: logged-in scraping verified (pages of 25, parsed directly from
   search cards to improve speed, dedupe against `seen_ids`); `posted_at` matches host local time.
+- Status dashboard: `status.sh` and `status.ps1` display the last 50 runs with query
+  locations formatted in 12-hour AM/PM timestamps, today's job counts per platform,
+  and container health.
 - Docker: python:3.13-slim + real Chrome + xvfb-run, `init: true`,
   standard port mapping `9222:9222` on the scraper; volumes `chrome_profile`,
   `wuzzuf_profile`, `indeed_profile`, `workable_profile`, `tanqeeb_profile`,
