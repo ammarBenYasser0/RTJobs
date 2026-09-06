@@ -31,11 +31,18 @@ from core.browser import (
     stop_chrome,
 )
 
-class TimeoutException(BaseException):
-    pass
-
 def _timeout_handler(signum, frame):
-    raise TimeoutException("Board run timed out")
+    print("[linkedin] Hard timeout (5m) reached — terminating process to avoid container hang.")
+    try:
+        from core import telegram
+        telegram.notify_failure(
+            "LinkedIn run timed out",
+            "The LinkedIn scraper exceeded the 5-minute timeout and was forcefully terminated to prevent hanging.",
+        )
+    except Exception:
+        pass
+    import os
+    os._exit(1)
 
 install_cdp_default_context_patch()
 
@@ -148,13 +155,7 @@ class LinkedInBoard(JobBoard):
                         )
                     print(f"[linkedin] Saved {new_count} new job(s) for this URL")
                     db.finish_run(run_id, "ok", jobs_found=new_count)
-                except TimeoutException:
-                    print(f"[linkedin] URL timed out after 5 minutes: {url}")
-                    db.finish_run(run_id, "timeout", error="5m timeout")
-                    telegram.notify_failure(
-                        "LinkedIn URL timed out",
-                        f"Search URL timed out after 5 minutes:\n{url}",
-                    )
+
                 except Exception as e:
                     print(f"[linkedin] Error scraping URL {url}: {e}")
                     db.finish_run(run_id, "error", error=str(e))

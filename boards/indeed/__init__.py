@@ -23,11 +23,18 @@ from core.browser import (
     stop_chrome,
 )
 
-class TimeoutException(BaseException):
-    pass
-
 def _timeout_handler(signum, frame):
-    raise TimeoutException("Board run timed out")
+    print("[indeed] Hard timeout (5m) reached — terminating process to avoid container hang.")
+    try:
+        from core import telegram
+        telegram.notify_failure(
+            "Indeed run timed out",
+            "The Indeed scraper exceeded the 5-minute timeout and was forcefully terminated to prevent hanging.",
+        )
+    except Exception:
+        pass
+    import os
+    os._exit(1)
 
 install_cdp_default_context_patch()
 
@@ -78,13 +85,7 @@ class IndeedBoard(JobBoard):
                         )
                     print(f"[indeed] Saved {new_count} new job(s) for this URL")
                     db.finish_run(run_id, "ok", jobs_found=new_count)
-                except TimeoutException:
-                    print(f"[indeed] URL timed out after 5 minutes: {url}")
-                    db.finish_run(run_id, "timeout", error="5m timeout")
-                    telegram.notify_failure(
-                        "Indeed URL timed out",
-                        f"Search URL timed out after 5 minutes:\n{url}",
-                    )
+
                 except Exception as e:
                     print(f"[indeed] Error scraping URL {url}: {e}")
                     db.finish_run(run_id, "error", error=str(e))

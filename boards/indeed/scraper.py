@@ -116,7 +116,7 @@ def _parse_pubdate(value) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-def _extract_jobs(html: str, seen_ids: set) -> tuple[list, int, bool]:
+def _extract_jobs(html: str, seen_ids: set, base_url: str = _BASE_URL) -> tuple[list, int, bool]:
     """Parse the search-page job cards blob.
 
     Returns (new_jobs, seen_count, blob_missing). `blob_missing` is True
@@ -184,7 +184,7 @@ def _extract_jobs(html: str, seen_ids: set) -> tuple[list, int, bool]:
                     item.get("createDate") or item.get("pubDate")
                 ),
                 "description": snippet,
-                "link": f"{_BASE_URL}/viewjob?jk={key}",
+                "link": f"{base_url}/viewjob?jk={key}",
                 "extra": extra,
                 "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
@@ -220,8 +220,12 @@ class IndeedJobSpider(Spider):
         )
 
     async def start_requests(self):
+        from urllib.parse import urlsplit
+        clean_url = re.sub(r"[?&]vjk=[^&]+", "", self.url)
+        if "?" not in clean_url and "&" in clean_url:
+            clean_url = clean_url.replace("&", "?", 1)
         yield Request(
-            self.url,
+            clean_url,
             callback=self.parse,
             sid="stealth",
             page_action=self.scan_search_page,
@@ -242,7 +246,12 @@ class IndeedJobSpider(Spider):
             markup.save_snapshot("indeed", "cloudflare_challenge", html)
             return
 
-        jobs, seen, blob_missing = _extract_jobs(html, self.seen_ids)
+        from urllib.parse import urlsplit
+        page_url = getattr(page, "url", None) or self.url
+        parts = urlsplit(page_url)
+        base_url = f"{parts.scheme}://{parts.netloc}" if parts.netloc else _BASE_URL
+
+        jobs, seen, blob_missing = _extract_jobs(html, self.seen_ids, base_url=base_url)
         self._page_jobs = jobs
         for job in jobs:
             self.seen_ids.add(job["external_id"])
@@ -251,7 +260,8 @@ class IndeedJobSpider(Spider):
             f"[indeed] {len(jobs)} new, {seen} already seen"
             f" ({blob_missing and 'blob MISSING' or 'blob ok'})"
         )
-        if blob_missing and not jobs:
+        is_empty_search = "did not match any jobs" in html or "No matching jobs found" in html
+        if blob_missing and not jobs and not is_empty_search:
             markup.save_snapshot("indeed", "search_empty", html)
 
     async def parse(self, response: Response):

@@ -66,10 +66,7 @@ KILL_CHROME_ON_START = os.environ.get("KILL_CHROME_ON_START", "false").lower() =
 # ---------------------------------------------------------------------------
 LINKEDIN_ENABLED = os.environ.get("LINKEDIN_ENABLED", "true").lower() == "true"
 LINKEDIN_SEARCH_URLS = _parse_url_list(
-    os.environ.get("LINKEDIN_SEARCH_URLS") or os.environ.get("LINKEDIN_SEARCH_URL"),
-    "https://www.linkedin.com/jobs/search/?currentJobId=4402032460&f_TPR=r7200&geoId=106155005&keywords=frontend%20developer&origin=JOB_SEARCH_PAGE_JOB_FILTER&refresh=true&location=egypt",
-    "https://www.linkedin.com/jobs/search/?currentJobId=4402032460&f_TPR=r7200&geoId=106155005&keywords=frontend%20developer&origin=JOB_SEARCH_PAGE_JOB_FILTER&refresh=true&location=EMEA",
-    "https://www.linkedin.com/jobs/search/?currentJobId=4402032460&f_TPR=r7200&geoId=106155005&keywords=frontend%20developer&origin=JOB_SEARCH_PAGE_JOB_FILTER&refresh=true&location=saudi%20arabia",
+    os.environ.get("LINKEDIN_SEARCH_URLS") or os.environ.get("LINKEDIN_SEARCH_URL")
 )
 # Landing page for login: already-logged-in sessions get redirected to the
 # feed; logged-out ones get the credential form directly.
@@ -84,9 +81,9 @@ CHECKPOINT_WAIT_SECONDS = int(os.environ.get("CHECKPOINT_WAIT_SECONDS", "600"))
 # ---------------------------------------------------------------------------
 # Wuzzuf
 # ---------------------------------------------------------------------------
+WUZZUF_ENABLED = os.environ.get("WUZZUF_ENABLED", "true").lower() == "true"
 WUZZUF_SEARCH_URLS = _parse_url_list(
-    os.environ.get("WUZZUF_SEARCH_URLS") or os.environ.get("WUZZUF_SEARCH_URL"),
-    "https://wuzzuf.net/search/jobs/?a=navbl%7Cspbl&filters%5Bpost_date%5D%5B0%5D=within_24_hours&q=frontend%20developer",
+    os.environ.get("WUZZUF_SEARCH_URLS") or os.environ.get("WUZZUF_SEARCH_URL")
 )
 WUZZUF_PROFILE_DIR = os.path.abspath(
     os.environ.get("WUZZUF_PROFILE_DIR", "./wuzzufprofile")
@@ -98,9 +95,7 @@ WUZZUF_PROFILE_DIR = os.path.abspath(
 # Disabled by default until the board is verified live (see INDEED.md).
 INDEED_ENABLED = os.environ.get("INDEED_ENABLED", "false").lower() == "true"
 INDEED_SEARCH_URLS = _parse_url_list(
-    os.environ.get("INDEED_SEARCH_URLS") or os.environ.get("INDEED_SEARCH_URL"),
-    "https://eg.indeed.com/jobs?q=frontend&l=egypt&sort=date&fromage=1&from=searchOnDesktopSerp&vjk=e6100dd5bfdeb85f",
-    "https://sa.indeed.com/jobs?q=front+end+developer&l=&sort=date&fromage=1&from=searchOnDesktopSerp&vjk=efbb0a53af679573"
+    os.environ.get("INDEED_SEARCH_URLS") or os.environ.get("INDEED_SEARCH_URL")
 )
 INDEED_PROFILE_DIR = os.path.abspath(
     os.environ.get("INDEED_PROFILE_DIR", "./indeedprofile")
