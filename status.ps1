@@ -82,17 +82,17 @@ try:
 
     runs = c.execute(
         'SELECT source, url, status, jobs_found, error, started_at, finished_at '
-        'FROM runs WHERE started_at >= ? ORDER BY id DESC LIMIT 20',
+        'FROM runs WHERE started_at >= ? ORDER BY id DESC LIMIT 50',
         (cutoff,)
     ).fetchall()
 
     if not runs:
         runs = c.execute(
             'SELECT source, url, status, jobs_found, error, started_at, finished_at '
-            'FROM runs ORDER BY id DESC LIMIT 10'
+            'FROM runs ORDER BY id DESC LIMIT 50'
         ).fetchall()
         if runs:
-            print('(No runs in last 24h — showing latest 10 runs)')
+            print('(No runs in last 24h — showing latest 50 runs)')
 
     print(f'{"TARGET / QUERY":<30} | {"STATUS":<10} | {"JOBS":<5} | {"STARTED":<23} | ERROR')
     print("-" * 88)
