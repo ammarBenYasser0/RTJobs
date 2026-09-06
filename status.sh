@@ -24,10 +24,14 @@ def format_label(source: str, url: str) -> str:
             loc = params['location'][0].strip()
         elif 'l' in params and params['l'][0].strip():
             loc = params['l'][0].strip()
-        elif parsed.netloc.startswith('sa.'):
+        elif parsed.netloc.startswith(('sa.', 'saudi.')):
             loc = 'Saudi Arabia'
-        elif parsed.netloc.startswith('eg.'):
+        elif parsed.netloc.startswith(('eg.', 'egypt.')):
             loc = 'Egypt'
+        elif 'workable.com' in parsed.netloc:
+            parts = [p for p in parsed.path.split('/') if p]
+            if len(parts) >= 2 and parts[0] == 'search':
+                loc = parts[1].replace('-', ' ').title()
 
         kw = None
         if 'keywords' in params and params['keywords'][0].strip():
@@ -35,7 +39,14 @@ def format_label(source: str, url: str) -> str:
         elif 'q' in params and params['q'][0].strip():
             kw = params['q'][0].strip()
 
-        source_name = {'linkedin': 'LinkedIn', 'wuzzuf': 'Wuzzuf', 'indeed': 'Indeed'}.get(source.lower(), source.title())
+        source_map = {
+            'linkedin': 'LinkedIn',
+            'wuzzuf': 'Wuzzuf',
+            'indeed': 'Indeed',
+            'workable': 'Workable',
+            'tanqeeb': 'Tanqeeb',
+        }
+        source_name = source_map.get(source.lower(), source.title())
         details = []
         if loc:
             details.append(loc.title() if loc.lower() != 'emea' else 'EMEA')
