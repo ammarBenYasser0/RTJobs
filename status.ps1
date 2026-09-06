@@ -97,15 +97,15 @@ except Exception as e:
 $script1 | docker compose run -T --quiet --rm scraper python
 
 Write-Host ""
-Write-Host "[2/3] Jobs Found & Notified per Platform (Last 24 Hours & Total):" -ForegroundColor Yellow
+Write-Host "[2/3] Jobs Found & Notified per Platform (Today & Total):" -ForegroundColor Yellow
 
 $script2 = @'
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 
 try:
     c = sqlite3.connect('/data/rtjobs.db')
-    cutoff = (datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
+    cutoff = datetime.now().strftime('%Y-%m-%d 00:00:00')
 
     totals = dict(c.execute('SELECT source, count(*) FROM jobs GROUP BY source').fetchall())
     recent = dict(c.execute('SELECT source, count(*) FROM jobs WHERE scraped_at >= ? GROUP BY source', (cutoff,)).fetchall())
@@ -115,7 +115,7 @@ try:
         for s in all_sources:
             rec_count = recent.get(s, 0)
             tot_count = totals.get(s, 0)
-            print(f'- {s}: {rec_count} new in last 24h ({tot_count} total stored)')
+            print(f'- {s}: {rec_count} new today ({tot_count} total stored)')
     else:
         print('No jobs found in database yet.')
 except Exception as e:
