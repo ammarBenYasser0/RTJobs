@@ -17,14 +17,18 @@ def _parse_url_list(val: str | list | None, *defaults: str | list[str]) -> list[
     """
     raw = (val or "").strip() if isinstance(val, str) else ""
     if raw:
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, list):
-                return [str(u).strip() for u in parsed if str(u).strip()]
-            if isinstance(parsed, str) and parsed.strip():
-                return [parsed.strip()]
-        except (ValueError, TypeError):
-            pass
+        candidates = [raw]
+        if (raw.startswith("'") and raw.endswith("'")) or (raw.startswith('"') and raw.endswith('"')):
+            candidates.append(raw[1:-1].strip())
+        for c in candidates:
+            try:
+                parsed = json.loads(c)
+                if isinstance(parsed, list):
+                    return [str(u).strip() for u in parsed if str(u).strip()]
+                if isinstance(parsed, str) and parsed.strip():
+                    return [parsed.strip()]
+            except (ValueError, TypeError):
+                pass
         return [raw]
 
     results: list[str] = []

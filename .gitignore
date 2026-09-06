@@ -6,6 +6,8 @@ LinkedInProfile
 chromeprofile
 wuzzufprofile
 indeedprofile
+workableprofile
+tanqeebprofile
 login_retries.json
 *.db
 markup/*/snapshots/
