@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS seen_ids (
 CREATE TABLE IF NOT EXISTS runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     source      TEXT NOT NULL,
+    url         TEXT,
     status      TEXT NOT NULL,
     jobs_found  INTEGER DEFAULT 0,
     error       TEXT,
@@ -65,6 +66,10 @@ def get_db(path: str = DB_PATH):
 def init_db():
     with get_db() as conn:
         conn.executescript(_SCHEMA)
+        try:
+            conn.execute("ALTER TABLE runs ADD COLUMN url TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
 # ---------------------------------------------------------------------------
@@ -156,11 +161,11 @@ def mark_notified(job_id: int):
 # ---------------------------------------------------------------------------
 
 
-def start_run(source: str) -> int:
+def start_run(source: str, url: str = "") -> int:
     with get_db() as conn:
         cur = conn.execute(
-            "INSERT INTO runs (source, status, started_at) VALUES (?, 'running', ?)",
-            (source, now_str()),
+            "INSERT INTO runs (source, url, status, started_at) VALUES (?, ?, 'running', ?)",
+            (source, url, now_str()),
         )
         return cur.lastrowid
 

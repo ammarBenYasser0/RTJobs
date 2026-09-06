@@ -1,16 +1,19 @@
-"""Wuzzuf job board: Cloudflare-protected SSR search pages, no login."""
+"""Tanqeeb job board: DOM-rendered job search, no login, no pagination.
+
+Search pages polled every run; stores direct job link + card snippet/description.
+"""
 
 import signal
 
 from boards.base import JobBoard
-from boards.wuzzuf import scraper
+from boards.tanqeeb import scraper
 from config import (
     CHROME_DEBUG_PORT,
     HEADLESS,
     KILL_CHROME_ON_START,
-    WUZZUF_ENABLED,
-    WUZZUF_PROFILE_DIR,
-    WUZZUF_SEARCH_URLS,
+    TANQEEB_ENABLED,
+    TANQEEB_PROFILE_DIR,
+    TANQEEB_SEARCH_URLS,
 )
 from core import db, telegram
 from core.browser import (
@@ -20,33 +23,36 @@ from core.browser import (
     stop_chrome,
 )
 
+
 def _timeout_handler(signum, frame):
-    print("[wuzzuf] Hard timeout (5m) reached — terminating process to avoid container hang.")
+    print("[tanqeeb] Hard timeout (5m) reached — terminating process to avoid container hang.")
     try:
         from core import telegram
+
         telegram.notify_failure(
-            "Wuzzuf run timed out",
-            "The Wuzzuf scraper exceeded the 5-minute timeout and was forcefully terminated to prevent hanging.",
+            "Tanqeeb run timed out",
+            "The Tanqeeb scraper exceeded the 5-minute timeout and was forcefully terminated to prevent hanging.",
         )
     except Exception:
         pass
     import os
+
     os._exit(1)
+
 
 install_cdp_default_context_patch()
 
 
-class WuzzufBoard(JobBoard):
-    name = "wuzzuf"
+class TanqeebBoard(JobBoard):
+    name = "tanqeeb"
     requires_login = False
-    enabled = WUZZUF_ENABLED
+    enabled = TANQEEB_ENABLED
 
     def run(self) -> int:
-        # Same Chrome/CDP model as LinkedIn: we launch it so the session is
-        # live-attachable on the debug port, and the spider connects to it.
-        # The persistent profile keeps the Cloudflare clearance cookie.
         chrome = launch_cdp_chrome(
-            WUZZUF_PROFILE_DIR, CHROME_DEBUG_PORT, headless=HEADLESS,
+            TANQEEB_PROFILE_DIR,
+            CHROME_DEBUG_PORT,
+            headless=HEADLESS,
             clean_locks=KILL_CHROME_ON_START,
         )
 
@@ -54,8 +60,8 @@ class WuzzufBoard(JobBoard):
         seen_ids = db.load_seen_ids(self.name)
 
         try:
-            for url in WUZZUF_SEARCH_URLS:
-                print(f"[wuzzuf] Starting scrape for URL: {url}")
+            for url in TANQEEB_SEARCH_URLS:
+                print(f"[tanqeeb] Starting scrape for URL: {url}")
                 run_id = db.start_run(self.name, url=url)
                 old_handler = None
                 if hasattr(signal, "SIGALRM"):
@@ -76,16 +82,16 @@ class WuzzufBoard(JobBoard):
 
                     if blocked_names:
                         print(
-                            f"[wuzzuf] Filtered out {len(blocked_names)} blocked-company"
+                            f"[tanqeeb] Filtered out {len(blocked_names)} blocked-company"
                             f" job(s): {', '.join(sorted(set(blocked_names)))}"
                         )
-                    print(f"[wuzzuf] Saved {new_count} new job(s) for this URL")
+                    print(f"[tanqeeb] Saved {new_count} new job(s) for this URL")
                     db.finish_run(run_id, "ok", jobs_found=new_count)
 
                 except Exception as e:
-                    print(f"[wuzzuf] Error scraping URL {url}: {e}")
+                    print(f"[tanqeeb] Error scraping URL {url}: {e}")
                     db.finish_run(run_id, "error", error=str(e))
-                    telegram.notify_failure("Wuzzuf URL failed", f"URL: {url}\nError: {e}")
+                    telegram.notify_failure("Tanqeeb URL failed", f"URL: {url}\nError: {e}")
                 finally:
                     if hasattr(signal, "SIGALRM"):
                         signal.alarm(0)
@@ -95,8 +101,8 @@ class WuzzufBoard(JobBoard):
             return total_new
 
         except Exception as e:
-            telegram.notify_failure("Wuzzuf board failed", str(e))
-            print(f"[wuzzuf] Run failed: {e}")
+            telegram.notify_failure("Tanqeeb board failed", str(e))
+            print(f"[tanqeeb] Run failed: {e}")
             return 0
         finally:
             stop_chrome(chrome)

@@ -1,11 +1,12 @@
 # AGENTS.md — RTJobs
 
 ## What this is
-Headful job-board scraper. Scrapes LinkedIn (login-gated) and Wuzzuf
-(Cloudflare-gated) via [scrapling](https://scrapling.readthedocs.io) stealth
+Headful job-board scraper. Scrapes LinkedIn (login-gated), Wuzzuf
+(Cloudflare-gated), Indeed (Cloudflare-gated), Workable (JSON-state),
+and Tanqeeb (DOM-rendered) via [scrapling](https://scrapling.readthedocs.io) stealth
 browser sessions, persists jobs to SQLite, posts new jobs to one Telegram
 channel and failure alerts to another. Scheduled in Docker via ofelia
-(every 6 min). Chrome runs headful under Xvfb with CDP on port 9222 for
+(every 15 min). Chrome runs headful under Xvfb with CDP on port 9222 for
 live debugging / manual 2FA solves.
 
 ## Commands
@@ -16,6 +17,7 @@ python main.py --reset-login        # clear LinkedIn retry/cooldown state
 python -m py_compile <files...>     # no linter/typechecker configured — compile check + offline tests are the verification loop
 docker compose up -d --build        # scheduled container run (ofelia)
 docker compose logs -f scraper
+./status.sh                         # check runs (last 50, 12h format), today's jobs, and health (status.ps1 on Windows)
 ```
 There is NO test framework. Verification = ad-hoc offline scripts that run
 extraction/parsing functions against the fixture files in `markup/` (see
@@ -35,7 +37,10 @@ boards/base.py           JobBoard ABC + load_board_selectors()
 boards/linkedin/         login.py (state machine) + scraper.py (Spider)
 boards/wuzzuf/           scraper.py (Spider, solve_cloudflare=True)
 boards/indeed/           scraper.py (Spider, solve_cloudflare=True) — see INDEED.md
+boards/workable/         scraper.py (Spider, solve_cloudflare=True) — JSON blobs
+boards/tanqeeb/          scraper.py (Spider) — DOM rendered cards
 markup/<site>/selectors.json   ALL CSS selectors live here, never in code
+status.sh / status.ps1   CLI dashboard: recent runs (50 rows, 12h format), today's jobs, health
 ```
 Job dict shape everywhere: `source, external_id, title, company, posted_at,
 description, link, extra(dict), scraped_at`.
@@ -62,9 +67,9 @@ description, link, extra(dict), scraped_at`.
    profile's cookies (would silently drop the LinkedIn session / Wuzzuf
    cf_clearance every run). CAREFUL: after a `new_context()` call the
    contexts list is reordered and index 0 becomes the ISOLATED one — grab
-   contexts[0] straight after `connect_over_cdp`. The container needs
-   `network_mode: host` because Chrome binds CDP to loopback and
-   docker-proxy can't forward to a container-loopback listener.
+   contexts[0] straight after `connect_over_cdp`. To allow external Docker
+   port forwarding (e.g. on Windows), `launch_cdp_chrome` runs a local
+   TCP forwarder bridging `0.0.0.0:9222` to Chrome's loopback CDP port.
 3. **Wuzzuf data comes from the SSR blob**, not just the DOM:
    `window.Wuzzuf.initialStoreState.job.collection` (full entities: HTML
    description/requirements, exact `postedAt` `MM/DD/YYYY HH:MM:SS`,
@@ -114,41 +119,64 @@ description, link, extra(dict), scraped_at`.
 10. `.env` must NEVER be committed (it was once — the old remote was
     replaced with a single fresh root commit; treat secrets as rotated).
     It is gitignored; untracked.
+11. **Docker env-file and build context gotchas**:
+    a. Docker CLI's `--env-file` (and docker compose env-file) splits strictly
+       on newlines and DOES NOT strip enclosing quotes. Multi-line values
+       (like formatted JSON arrays) truncate at the first newline (e.g.
+       `URLS=[` assigns `[`). All `*_SEARCH_URLS` entries in `.env` must be
+       formatted on a single line. `config.py:_parse_url_list` also strips
+       enclosing single/double quotes defensively.
+    b. Headful Chrome running in container volumes creates Linux domain
+       sockets and locks (e.g. `SingletonCookie`, `SingletonLock`). On Windows
+       Docker Desktop, copying these into the build context during `docker build`
+       causes `invalid file request` build failures. `.dockerignore` must
+       exclude `*profile/`, `.venv/`, and `*.db`.
 
 ## Env vars (see config.py / README for defaults)
 Required: `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_TEST_ID`
 (failure channel; override: `TELEGRAM_FAILURE_CHAT_ID`),
 `LINKEDIN_EMAIL`, `LINKEDIN_PASSWORD`.
 Notable: `LINKEDIN_ENABLED` (currently `True` in `.env`), `INDEED_ENABLED`
-(now `True` in `.env`), `HEADLESS`,
+(now `True` in `.env`), `WORKABLE_ENABLED`, `TANQEEB_ENABLED`, `HEADLESS`,
 `DATA_DIR`, `MARKUP_DIR`, `CHROME_DEBUG_PORT=9222`,
-`CHECKPOINT_WAIT_SECONDS`, `MAX_LOGIN_RETRIES`, `WUZZUF_SEARCH_URL`,
+`CHECKPOINT_WAIT_SECONDS`, `MAX_LOGIN_RETRIES`,
+`LINKEDIN_SEARCH_URL` / `LINKEDIN_SEARCH_URLS` (string or JSON array),
+`WUZZUF_SEARCH_URL` / `WUZZUF_SEARCH_URLS` (string or JSON array),
+`INDEED_SEARCH_URL` / `INDEED_SEARCH_URLS` (string or JSON array),
+`WORKABLE_SEARCH_URL` / `WORKABLE_SEARCH_URLS` (string or JSON array),
+`TANQEEB_SEARCH_URL` / `TANQEEB_SEARCH_URLS` (string or JSON array),
 `*_PROFILE_DIR`, `TZ` (compose: `${TZ:-Africa/Cairo}`).
 
 ## Current state / how things were last verified
 - Docker hosting verified end-to-end on this machine: ofelia fires every
-  6 min → one-shot `rtjobs` container → LinkedIn (logged-in session in the
-  `chrome_profile` volume) + Wuzzuf scrape → SQLite + Telegram.
+  15 min → one-shot `rtjobs` container → LinkedIn (logged-in session in the
+  `chrome_profile` volume) + Wuzzuf + Indeed + Workable + Tanqeeb → SQLite + Telegram.
+- Multi-URL support: each board supports multiple search queries via a JSON list
+  or plain string in env vars. Each query runs in sequence with its own 5-minute
+  timeout, reusing the board's single Chrome instance and persistent profile.
 - CDP live attach verified: while a run is in progress,
   `curl http://localhost:9222/json/version` on the host returns Chrome's
   DevTools info (open localhost:9222 / chrome://inspect to drive it —
   this is how checkpoints/2FA get solved manually). Endpoint is only up
   while a run is active.
-- Wuzzuf: 15 jobs/page, enriched from SSR state, deduped, saved, notified.
-- Indeed: single sort=date search page (~15 jobs, no pagination — login-gated),
-  JSON blobs only (no CSS selectors): `window.mosaic.providerData["mosaic-provider-jobcards"]`
-  for cards + follow-up `/viewjob?jk=` fetch per NEW jobkey for the description
-  (`window._initialData` -> `hostQueryExecutionResult.data.jobData.results[0].job` —
-  NOTE the search page's two-pane blob uses the `autoOpenTwoPaneViewjobResponse.body.`
-  prefix instead; ld+json is the fallback). `pubDate` is normalized to midnight —
-  always prefer `createDate`. Verified live: CF solved via persistent profile,
-  detail cap `_MAX_DETAIL_FETCHES=10`/run (snippet placeholder when skipped).
-- LinkedIn: logged-in scraping verified (pages of 25, detail panels,
-  dedupe against `seen_ids`); `posted_at` matches host local time.
+- Wuzzuf: 15 jobs/page, enriched from SSR state, deduped across queries, saved, notified.
+- Indeed: sort=date search page (~15 jobs, no pagination), JSON blobs only
+  (`window.mosaic.providerData["mosaic-provider-jobcards"]`), no detail page fetches
+  (stores direct `/viewjob?jk=` link + card snippet), `createDate` for timestamp.
+- Workable: search page JSON blob (`initialState["api/v1/jobs"]["data"]["jobs"]`), full
+  HTML description and requirements in search state, no pagination, `solve_cloudflare=True`.
+- Tanqeeb: search page rendered cards (`div.search-job-card`), selectors in
+  `markup/tanqeeb/selectors.json`, no pagination for v1, relative date parsing (`_parse_ago`),
+  verified live across Egypt & Saudi queries with Telegram notifications.
+- LinkedIn: logged-in scraping verified (pages of 25, parsed directly from
+  search cards to improve speed, dedupe against `seen_ids`); `posted_at` matches host local time.
+- Status dashboard: `status.sh` and `status.ps1` display the last 50 runs with query
+  locations formatted in 12-hour AM/PM timestamps, today's job counts per platform,
+  and container health.
 - Docker: python:3.13-slim + real Chrome + xvfb-run, `init: true`,
-  `network_mode: host` on the scraper; volumes `chrome_profile`,
-  `wuzzuf_profile`, `scraper_data`; `./markup` bind-mounted to
-  `/data/markup`.
+  standard port mapping `9222:9222` on the scraper; volumes `chrome_profile`,
+  `wuzzuf_profile`, `indeed_profile`, `workable_profile`, `tanqeeb_profile`,
+  `scraper_data`; `./markup` bind-mounted to `/data/markup`.
 
 ## Offline testing (do this after ANY parsing/selector change)
 ```python
@@ -164,15 +192,28 @@ jobs, dup = _extract_jobs(html, load_board_selectors("wuzzuf"), set(), entities)
 ```
 
 ```python
-# fixtures: markup/indeed/first_page.html (search page capture),
-#           markup/indeed/newjob_sample.html (one viewjob page capture)
-from boards.indeed.scraper import _extract_jobs, _extract_detail
+# fixtures: markup/indeed/first_page.html (search page capture)
+from boards.indeed.scraper import _extract_jobs
 search = open("markup/indeed/first_page.html", encoding="utf-8").read()
 jobs, seen, missing = _extract_jobs(search, set())
-# expect: 15 jobs, missing=False, posted_at from createDate (pubDate is midnight-normalized)
-view = open("markup/indeed/newjob_sample.html", encoding="utf-8").read()
-desc, extra = _extract_detail(view)
-# expect: non-empty desc, extra['latitude']/['longitude']
+# expect: 15 jobs, missing=False, description=snippet, posted_at from createDate
+```
+
+```python
+# fixtures: markup/workable/first_page.html (search page capture)
+from boards.workable.scraper import _extract_jobs
+search = open("markup/workable/first_page.html", encoding="utf-8").read()
+jobs, seen, missing = _extract_jobs(search, set())
+# expect: 13 jobs, missing=False, workplace set
+```
+
+```python
+# fixtures: markup/tanqeeb/first_page.html (search page capture)
+from boards.tanqeeb.scraper import _extract_jobs
+from boards.base import load_board_selectors
+search = open("markup/tanqeeb/first_page.html", encoding="utf-8").read()
+jobs, seen, empty = _extract_jobs(search, load_board_selectors("tanqeeb"), set())
+# expect: >= 1 jobs, empty=False
 ```
 Set dummy env before importing config in test scripts:
 `TELEGRAM_TOKEN=x TELEGRAM_CHAT_ID=1 TELEGRAM_TEST_ID=2 DATA_DIR=<tmp> MARKUP_DIR=<repo>/markup`.
@@ -194,3 +235,8 @@ Set dummy env before importing config in test scripts:
 - Docstrings/comments are used throughout — keep that style when editing.
 - DB timestamps are local time strings `YYYY-MM-DD HH:MM(:SS)`; snapshot
   filenames are UTC. Don't mix formats.
+- Timeouts: All board runners are wrapped in a 5-minute `SIGALRM` timeout
+  to prevent infinite hangs.
+- Persistence: Spiders persist jobs and notify Telegram incrementally per-page
+  within `parse` (rather than in bulk at the end) to prevent data loss if a
+  later page hangs.

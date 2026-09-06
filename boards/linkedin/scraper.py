@@ -14,7 +14,6 @@ from scrapling import Selector
 from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
-from config import LINKEDIN_SEARCH_URL
 from core import blocklist, db, markup, telegram
 from core.browser import patch_no_load_wait
 
@@ -52,10 +51,11 @@ def _text(sel: Selector, css: str, separator: str = "") -> str:
 class LinkedInJobSpider(Spider):
     name = "linkedin_job_spider"
 
-    def __init__(self, selectors: dict, cdp_url: str, *args, **kwargs):
+    def __init__(self, selectors: dict, cdp_url: str, url: str, seen_ids: set | None = None, *args, **kwargs):
         self.sel = selectors
         self.cdp_url = cdp_url
-        self.seen_ids = db.load_seen_ids("linkedin")
+        self.url = url
+        self.seen_ids = seen_ids if seen_ids is not None else db.load_seen_ids("linkedin")
 
         self._page_jobs: list[dict] = []
         self._repeat_found: bool = False
@@ -77,8 +77,11 @@ class LinkedInJobSpider(Spider):
         )
 
     async def start_requests(self):
+        clean_url = re.sub(r"[?&]currentJobId=[^&]+", "", self.url)
+        if "?" not in clean_url and "&" in clean_url:
+            clean_url = clean_url.replace("&", "?", 1)
         yield Request(
-            LINKEDIN_SEARCH_URL,
+            clean_url,
             callback=self.parse,
             sid="stealth",
             page_action=self.deep_scan_page,
@@ -100,6 +103,12 @@ class LinkedInJobSpider(Spider):
                     await asyncio.sleep(0.3)
         except Exception as e:
             print(f"[warn] Card list wait: {e}")
+            self._repeat_found = True
+            try:
+                html = await page.content()
+                markup.save_snapshot("linkedin", "search_empty", html)
+            except Exception:
+                pass
             return
 
         cards = await page.locator(self.sel["search"]["job_card"]).all()
@@ -130,7 +139,7 @@ class LinkedInJobSpider(Spider):
             print("[stop] Duplicate detected on this page — no next page.")
             self._repeat_found = True
 
-        if not jobs_to_scrape_now and len(cards) > 0:
+        if not jobs_to_scrape_now:
             self._repeat_found = True
 
         # Suspicious empty page or login redirect -> keep markup for debugging
@@ -193,6 +202,9 @@ class LinkedInJobSpider(Spider):
             sent = telegram.notify_jobs(db.get_unnotified("linkedin"))
             if sent:
                 print(f"[linkedin] Notified {sent} job(s)")
+        else:
+            print(f"[linkedin] No new jobs on page {response.url}, stopping pagination.")
+            return
 
         if self._repeat_found or self._login_redirect:
             return
@@ -218,9 +230,9 @@ class LinkedInJobSpider(Spider):
         )
 
 
-def scrape(selectors: dict, cdp_url: str) -> dict:
+def scrape(selectors: dict, cdp_url: str, url: str, seen_ids: set | None = None) -> dict:
     """Run the spider. Returns {'items': [...], 'login_redirect': bool, 'new_count': int, 'blocked_names': list}."""
-    spider = LinkedInJobSpider(selectors=selectors, cdp_url=cdp_url)
+    spider = LinkedInJobSpider(selectors=selectors, cdp_url=cdp_url, url=url, seen_ids=seen_ids)
     result = spider.start()
     items = list(result.items)
     print(

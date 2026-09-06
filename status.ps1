@@ -1,14 +1,14 @@
-#!/bin/bash
-# Simple script to check the status of RTJobs
+param()
 
 # Move to the script's directory so docker compose finds the yaml file
-cd "$(dirname "$0")" || exit 1
+Set-Location -Path $PSScriptRoot
 
-echo "=== RTJobs Status ==="
-echo ""
+Write-Host "=== RTJobs Status ===" -ForegroundColor Cyan
+Write-Host ""
 
-echo "[1/3] Scraper Runs (Last 24 Hours):"
-docker compose run --quiet --rm scraper python -c "
+Write-Host "[1/3] Scraper Runs (Last 24 Hours):" -ForegroundColor Yellow
+
+$script1 = @'
 import sqlite3
 import urllib.parse
 from datetime import datetime, timedelta
@@ -55,7 +55,7 @@ def format_label(source: str, url: str) -> str:
             details.append(clean_kw.title() if clean_kw else kw.title())
 
         if details:
-            return f'{source_name} ({\", \".join(details)})'
+            return f"{source_name} ({', '.join(details)})"
         return source_name
     except Exception:
         return source.capitalize()
@@ -95,7 +95,7 @@ try:
             print('(No runs in last 24h — showing latest 50 runs)')
 
     print(f'{"TARGET / QUERY":<30} | {"STATUS":<10} | {"JOBS":<5} | {"STARTED":<23} | ERROR')
-    print('-' * 88)
+    print("-" * 88)
     for r in runs:
         label = format_label(r['source'], r['url'])
         error_msg = r['error'] if r['error'] else '-'
@@ -103,11 +103,14 @@ try:
         print(f'{label:<30} | {r["status"]:<10} | {str(r["jobs_found"]):<5} | {started_time:<23} | {error_msg}')
 except Exception as e:
     print(f'Error reading DB runs: {e}')
-"
+'@
 
-echo ""
-echo "[2/3] Jobs Found & Notified per Platform (Today & Total):"
-docker compose run --quiet --rm scraper python -c "
+$script1 | docker compose run -T --quiet --rm scraper python
+
+Write-Host ""
+Write-Host "[2/3] Jobs Found & Notified per Platform (Today & Total):" -ForegroundColor Yellow
+
+$script2 = @'
 import sqlite3
 from datetime import datetime
 
@@ -128,10 +131,13 @@ try:
         print('No jobs found in database yet.')
 except Exception as e:
     print(f'Error reading DB jobs: {e}')
-"
+'@
 
-echo ""
-echo "[3/3] Checking Container Health:"
-docker ps --format "table {{.Names}}\t{{.Status}}\t{{.RunningFor}}" | grep -E "rtjobs|ofelia|NAMES"
-echo ""
-echo "Tip: Run 'docker logs --tail 50 rtjobs' to see the raw application logs."
+$script2 | docker compose run -T --quiet --rm scraper python
+
+Write-Host ""
+Write-Host "[3/3] Checking Container Health:" -ForegroundColor Yellow
+docker ps --format "table {{.Names}}`t{{.Status}}`t{{.RunningFor}}" | Select-String -Pattern "rtjobs|ofelia|NAMES"
+Write-Host ""
+Write-Host "Tip: Run 'docker logs --tail 50 rtjobs' to see the raw application logs." -ForegroundColor Green
+

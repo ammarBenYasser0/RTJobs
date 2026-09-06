@@ -3,11 +3,43 @@ config.py
 Single source of truth. All paths and credentials imported from here.
 """
 
+import json
 import os
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _parse_url_list(val: str | list | None, *defaults: str | list[str]) -> list[str]:
+    """Accept a plain URL string, a JSON list of URLs from env, or variable default URLs.
+    Single-string values (existing .env files) are returned as a one-element list.
+    """
+    raw = (val or "").strip() if isinstance(val, str) else ""
+    if raw:
+        candidates = [raw]
+        if (raw.startswith("'") and raw.endswith("'")) or (raw.startswith('"') and raw.endswith('"')):
+            candidates.append(raw[1:-1].strip())
+        for c in candidates:
+            try:
+                parsed = json.loads(c)
+                if isinstance(parsed, list):
+                    return [str(u).strip() for u in parsed if str(u).strip()]
+                if isinstance(parsed, str) and parsed.strip():
+                    return [parsed.strip()]
+            except (ValueError, TypeError):
+                pass
+        return [raw]
+
+    results: list[str] = []
+    for d in defaults:
+        if isinstance(d, (list, tuple)):
+            for item in d:
+                if str(item).strip():
+                    results.append(str(item).strip())
+        elif isinstance(d, str) and d.strip():
+            results.append(d.strip())
+    return results
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -37,9 +69,8 @@ KILL_CHROME_ON_START = os.environ.get("KILL_CHROME_ON_START", "false").lower() =
 # LinkedIn
 # ---------------------------------------------------------------------------
 LINKEDIN_ENABLED = os.environ.get("LINKEDIN_ENABLED", "true").lower() == "true"
-LINKEDIN_SEARCH_URL = os.environ.get(
-    "LINKEDIN_SEARCH_URL",
-    "https://www.linkedin.com/jobs/search/?currentJobId=4402032460&f_TPR=r7200&geoId=106155005&keywords=frontend%20developer&origin=JOB_SEARCH_PAGE_JOB_FILTER&refresh=true",
+LINKEDIN_SEARCH_URLS = _parse_url_list(
+    os.environ.get("LINKEDIN_SEARCH_URLS") or os.environ.get("LINKEDIN_SEARCH_URL")
 )
 # Landing page for login: already-logged-in sessions get redirected to the
 # feed; logged-out ones get the credential form directly.
@@ -54,9 +85,9 @@ CHECKPOINT_WAIT_SECONDS = int(os.environ.get("CHECKPOINT_WAIT_SECONDS", "600"))
 # ---------------------------------------------------------------------------
 # Wuzzuf
 # ---------------------------------------------------------------------------
-WUZZUF_SEARCH_URL = os.environ.get(
-    "WUZZUF_SEARCH_URL",
-    "https://wuzzuf.net/search/jobs/?a=navbl%7Cspbl&filters%5Bpost_date%5D%5B0%5D=within_24_hours&q=frontend%20developer"
+WUZZUF_ENABLED = os.environ.get("WUZZUF_ENABLED", "true").lower() == "true"
+WUZZUF_SEARCH_URLS = _parse_url_list(
+    os.environ.get("WUZZUF_SEARCH_URLS") or os.environ.get("WUZZUF_SEARCH_URL")
 )
 WUZZUF_PROFILE_DIR = os.path.abspath(
     os.environ.get("WUZZUF_PROFILE_DIR", "./wuzzufprofile")
@@ -67,12 +98,33 @@ WUZZUF_PROFILE_DIR = os.path.abspath(
 # ---------------------------------------------------------------------------
 # Disabled by default until the board is verified live (see INDEED.md).
 INDEED_ENABLED = os.environ.get("INDEED_ENABLED", "false").lower() == "true"
-INDEED_SEARCH_URL = os.environ.get(
-    "INDEED_SEARCH_URL",
-    "https://eg.indeed.com/jobs?q=frontend&l=egypt&sort=date&fromage=1&from=searchOnDesktopSerp&vjk=e6100dd5bfdeb85f",
+INDEED_SEARCH_URLS = _parse_url_list(
+    os.environ.get("INDEED_SEARCH_URLS") or os.environ.get("INDEED_SEARCH_URL")
 )
 INDEED_PROFILE_DIR = os.path.abspath(
     os.environ.get("INDEED_PROFILE_DIR", "./indeedprofile")
+)
+
+# ---------------------------------------------------------------------------
+# Workable
+# ---------------------------------------------------------------------------
+WORKABLE_ENABLED = os.environ.get("WORKABLE_ENABLED", "false").lower() == "true"
+WORKABLE_SEARCH_URLS = _parse_url_list(
+    os.environ.get("WORKABLE_SEARCH_URLS") or os.environ.get("WORKABLE_SEARCH_URL")
+)
+WORKABLE_PROFILE_DIR = os.path.abspath(
+    os.environ.get("WORKABLE_PROFILE_DIR", "./workableprofile")
+)
+
+# ---------------------------------------------------------------------------
+# Tanqeeb
+# ---------------------------------------------------------------------------
+TANQEEB_ENABLED = os.environ.get("TANQEEB_ENABLED", "false").lower() == "true"
+TANQEEB_SEARCH_URLS = _parse_url_list(
+    os.environ.get("TANQEEB_SEARCH_URLS") or os.environ.get("TANQEEB_SEARCH_URL")
+)
+TANQEEB_PROFILE_DIR = os.path.abspath(
+    os.environ.get("TANQEEB_PROFILE_DIR", "./tanqeebprofile")
 )
 
 # ---------------------------------------------------------------------------

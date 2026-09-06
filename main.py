@@ -5,12 +5,16 @@ import sys
 from boards.linkedin import LinkedInBoard
 from boards.wuzzuf import WuzzufBoard
 from boards.indeed import IndeedBoard
+from boards.workable import WorkableBoard
+from boards.tanqeeb import TanqeebBoard
 from core import db, login_state
 
 BOARDS = [
     LinkedInBoard,
     WuzzufBoard,
     IndeedBoard,
+    WorkableBoard,
+    TanqeebBoard,
 ]
 
 

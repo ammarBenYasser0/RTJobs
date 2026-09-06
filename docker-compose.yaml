@@ -25,6 +25,8 @@ services:
       - chrome_profile:/app/chromeprofile
       - wuzzuf_profile:/app/wuzzufprofile
       - indeed_profile:/app/indeedprofile
+      - workable_profile:/app/workableprofile
+      - tanqeeb_profile:/app/tanqeebprofile
       - scraper_data:/data
       - ./markup:/data/markup
     command: ["xvfb-run", "-a", "python", "main.py"]
@@ -43,7 +45,7 @@ services:
     # job-exec may be defined on a target container). Seconds-first cron.
     labels:
       ofelia.enabled: "true"
-      ofelia.job-run.scraper.schedule: "0 */6 * * * *"
+      ofelia.job-run.scraper.schedule: "0 */15 * * * *"
       ofelia.job-run.scraper.container: "rtjobs"
       ofelia.job-run.scraper.delete: "false"
 
@@ -51,4 +53,6 @@ volumes:
   chrome_profile:
   wuzzuf_profile:
   indeed_profile:
+  workable_profile:
+  tanqeeb_profile:
   scraper_data:
