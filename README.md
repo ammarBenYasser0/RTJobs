@@ -44,6 +44,7 @@ Before starting, make sure you have:
 ## 2. Telegram Setup
 
 RTJobs sends notifications to two separate Telegram channels/groups:
+
 - **Jobs channel** — one message per new job posting found
 - **Alerts channel** — login failures, checkpoints, crashes, and errors
 
@@ -56,6 +57,7 @@ You need a **Telegram bot** and the **chat IDs** of both channels.
    - Give it a display name (e.g. `RTJobs Notifier`)
    - Give it a username (e.g. `rtjobs_notify_bot`)
 3. BotFather will reply with your **bot token** — it looks like:
+
    ```
    7123456789:AAH1bCdE2fGhIjKlMnOpQrStUvWxYz
    ```
@@ -71,6 +73,7 @@ You need two channels (or groups, or even two separate chats with the bot):
 > **Tip:** You can use the same chat for both if you prefer, but separating them keeps job notifications clean and uncluttered.
 
 **To create a channel:**
+
 1. In Telegram, tap the hamburger menu → **New Channel**.
 2. Name it (e.g. `RTJobs - New Listings`), set it as Public or Private.
 3. **Add your bot as an admin** of the channel (Channel Settings → Administrators → Add Admin → search for your bot's username).
@@ -84,9 +87,11 @@ The easiest way:
 1. **For channels:** Forward a message from each channel to **@userinfobot** — it will reply with the chat ID (a negative number like `-1001234567890`).
 2. **For groups:** Add **@userinfobot** to the group, then type any message — it will reply with the chat ID.
 3. **For a direct chat with the bot:** Send any message to your bot, then visit:
+
    ```
    https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
    ```
+
    Look for `"chat":{"id": ...}` in the JSON response.
 
 **Save both chat IDs** — you'll need them as `TELEGRAM_CHAT_ID` (jobs) and `TELEGRAM_TEST_ID` (alerts).
@@ -96,7 +101,7 @@ The easiest way:
 ## 3. Clone & Configure
 
 ```bash
-git clone https://github.com/y2youssef/RTJobs.git
+git clone https://github.com/ammarBenYasser0/RTJobs
 cd RTJobs
 ```
 
@@ -206,6 +211,7 @@ docker compose up -d --build
 ```
 
 This will:
+
 1. Build the `rtjobs-scraper` image (Python 3.13 + real Chrome + Xvfb).
 2. Start the **scraper** container (`rtjobs`) — runs one scrape cycle immediately.
 3. Start the **scheduler** container (`ofelia`) — triggers the scraper every 15 minutes automatically.
@@ -217,6 +223,7 @@ docker compose logs -f scraper
 ```
 
 You should see output like:
+
 ```
 [main] Running board: linkedin
 [login] Opening login page (redirects to feed if active)
@@ -284,6 +291,7 @@ resume.cmd
 ### What happens on an abrupt shutdown?
 
 RTJobs is designed to handle unexpected shutdowns safely:
+
 - **No data loss:** Jobs are saved to SQLite and sent to Telegram **incrementally per page**, not at the end of a run. If power cuts mid-scrape, already-found jobs are already persisted.
 - **Auto-healing Chrome locks:** Stale `SingletonLock` files from a killed Chrome are automatically cleaned up on the next start (`KILL_CHROME_ON_START=true` in Docker).
 - **Scheduler recovery:** If `ofelia` was running with `restart: unless-stopped` and Docker Desktop auto-starts on login, the scheduler will resume automatically after a reboot — no manual intervention needed.
@@ -304,6 +312,7 @@ While a scrape is running, you can watch the real Chrome browser live:
 3. This is also how you **manually solve LinkedIn 2FA challenges** (see below).
 
 Verify CDP is reachable:
+
 ```bash
 curl http://localhost:9222/json/version
 ```
@@ -314,14 +323,15 @@ curl http://localhost:9222/json/version
 
 ## 8. LinkedIn Login Behavior
 
-| State | What happens |
-|---|---|
-| **Session active** | Scrapes directly (no login needed) |
-| **Login page** | Auto-fills credentials with human-like typing, submits |
-| **Checkpoint / 2FA** | Sends an alert to your failure channel, pauses for up to `CHECKPOINT_WAIT_SECONDS` (default: 10 min) — connect via CDP (`localhost:9222`) and solve it manually |
-| **Repeated failures** | Escalating cooldowns (5m → 15m → 30m), then profile wipe for a fresh login |
+| State                 | What happens                                                                                                                                                    |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Session active**    | Scrapes directly (no login needed)                                                                                                                              |
+| **Login page**        | Auto-fills credentials with human-like typing, submits                                                                                                          |
+| **Checkpoint / 2FA**  | Sends an alert to your failure channel, pauses for up to `CHECKPOINT_WAIT_SECONDS` (default: 10 min) — connect via CDP (`localhost:9222`) and solve it manually |
+| **Repeated failures** | Escalating cooldowns (5m → 15m → 30m), then profile wipe for a fresh login                                                                                      |
 
 To manually clear a stuck cooldown:
+
 ```bash
 python main.py --reset-login
 ```
@@ -361,6 +371,7 @@ INDEED_SEARCH_URLS=["https://eg.indeed.com/jobs?q=frontend", "https://sa.indeed.
 Each query runs in sequence with its own 5-minute timeout, reusing the board's single Chrome instance and persistent profile.
 
 After changing `.env`, restart the scraper:
+
 ```bash
 docker compose down && docker compose up -d
 ```
@@ -382,6 +393,7 @@ docker compose down && docker compose up -d
 3. Register in the `BOARDS` list in `main.py`; keep `enabled = False` until ready.
 
 Job dict shape everywhere:
+
 ```python
 {
     "source": "sitename",
@@ -426,17 +438,17 @@ A Chrome window will open, log into LinkedIn (or reuse the saved session), scrap
 
 ## 14. Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| `curl localhost:9222` fails | CDP is only up during active scrape runs. Wait for the next scheduled run, or trigger one manually: `docker start rtjobs` |
-| No Telegram notifications | Verify `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`. Make sure the bot is an **admin** of the channel. |
-| No failure alerts | Check `TELEGRAM_TEST_ID` / `TELEGRAM_FAILURE_CHAT_ID` — the bot must be able to post there too. |
-| Stuck "blocked" login state | `python main.py --reset-login` or run inside the container: `docker compose run --rm scraper python main.py --reset-login` |
-| Chrome won't start in container | Profile lock from a crash. `KILL_CHROME_ON_START=true` handles it automatically. If stuck: `docker compose down && docker compose up -d` |
-| `Page.goto: Timeout ... waiting until "load"` | Already handled — navigations wait for `domcontentloaded` instead of `load` (some sites have hanging trackers). If it recurs, check `core/browser.py`. |
-| Login keeps failing after a site change | Check the newest snapshot in `markup/linkedin/snapshots/login_failure/` and update `markup/linkedin/selectors.json`. |
-| Containers stopped after reboot | Enable Docker Desktop auto-start (Settings → General → "Start Docker Desktop when you sign in"). The `ofelia` scheduler has `restart: unless-stopped` so it auto-resumes. |
-| Docker build fails with `invalid file request` | Stale Chrome sockets in profile dirs. Already handled by `.dockerignore` excluding `*profile/`. If it recurs: delete local `*profile/` directories and rebuild. |
+| Symptom                                        | Fix                                                                                                                                                                       |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `curl localhost:9222` fails                    | CDP is only up during active scrape runs. Wait for the next scheduled run, or trigger one manually: `docker start rtjobs`                                                 |
+| No Telegram notifications                      | Verify `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`. Make sure the bot is an **admin** of the channel.                                                               |
+| No failure alerts                              | Check `TELEGRAM_TEST_ID` / `TELEGRAM_FAILURE_CHAT_ID` — the bot must be able to post there too.                                                                           |
+| Stuck "blocked" login state                    | `python main.py --reset-login` or run inside the container: `docker compose run --rm scraper python main.py --reset-login`                                                |
+| Chrome won't start in container                | Profile lock from a crash. `KILL_CHROME_ON_START=true` handles it automatically. If stuck: `docker compose down && docker compose up -d`                                  |
+| `Page.goto: Timeout ... waiting until "load"`  | Already handled — navigations wait for `domcontentloaded` instead of `load` (some sites have hanging trackers). If it recurs, check `core/browser.py`.                    |
+| Login keeps failing after a site change        | Check the newest snapshot in `markup/linkedin/snapshots/login_failure/` and update `markup/linkedin/selectors.json`.                                                      |
+| Containers stopped after reboot                | Enable Docker Desktop auto-start (Settings → General → "Start Docker Desktop when you sign in"). The `ofelia` scheduler has `restart: unless-stopped` so it auto-resumes. |
+| Docker build fails with `invalid file request` | Stale Chrome sockets in profile dirs. Already handled by `.dockerignore` excluding `*profile/`. If it recurs: delete local `*profile/` directories and rebuild.           |
 
 ---
 
