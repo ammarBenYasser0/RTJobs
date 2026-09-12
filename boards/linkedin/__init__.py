@@ -7,6 +7,8 @@ spider both connect to that same Chrome over cdp_url and reuse its default
 (persistent profile) context, so the login cookies carry into the scrape.
 """
 
+import signal
+
 from scrapling.fetchers import StealthySession
 
 from boards.base import JobBoard
@@ -18,8 +20,9 @@ from config import (
     LINKEDIN_ENABLED,
     LINKEDIN_LOGIN_URL,
     LINKEDIN_PROFILE_DIR,
+    LINKEDIN_SEARCH_URLS,
 )
-from core import blocklist, db, login_state, telegram
+from core import db, login_state, telegram
 from core.browser import (
     cdp_url_for,
     install_cdp_default_context_patch,
@@ -27,6 +30,19 @@ from core.browser import (
     patch_no_load_wait,
     stop_chrome,
 )
+
+def _timeout_handler(signum, frame):
+    print("[linkedin] Hard timeout (5m) reached — terminating process to avoid container hang.")
+    try:
+        from core import telegram
+        telegram.notify_failure(
+            "LinkedIn run timed out",
+            "The LinkedIn scraper exceeded the 5-minute timeout and was forcefully terminated to prevent hanging.",
+        )
+    except Exception:
+        pass
+    import os
+    os._exit(1)
 
 install_cdp_default_context_patch()
 
@@ -37,13 +53,12 @@ class LinkedInBoard(JobBoard):
     enabled = LINKEDIN_ENABLED
 
     def run(self) -> int:
-        run_id = db.start_run(self.name)
-
         # Cooldown active — don't even start the browser. (Also re-checked
         # inside page_action as a safety net.)
         if login_state.is_blocked():
             remaining = login_state.remaining_seconds()
             print(f"[linkedin] Skipping run — blocked for {remaining}s.")
+            run_id = db.start_run(self.name)
             db.finish_run(run_id, "blocked")
             return 0
 
@@ -65,11 +80,18 @@ class LinkedInBoard(JobBoard):
         )
 
         try:
-            return self._run(chrome, cdp, run_id)
+            return self._run(chrome, cdp)
+        except Exception as e:
+            telegram.notify_failure(
+                "LinkedIn board failed",
+                str(e),
+            )
+            print(f"[linkedin] Run failed: {e}")
+            return 0
         finally:
             stop_chrome(chrome)
 
-    def _run(self, chrome, cdp: str, run_id: int) -> int:
+    def _run(self, chrome, cdp: str) -> int:
         outcome: dict = {"ok": False}
 
         def page_action(page):
@@ -78,7 +100,7 @@ class LinkedInBoard(JobBoard):
         try:
             with StealthySession(
                 cdp_url=cdp,
-                disable_resources=True,
+                disable_resources=False,
                 timeout=30_000,
                 page_setup=patch_no_load_wait,
                 page_action=page_action,
@@ -88,49 +110,67 @@ class LinkedInBoard(JobBoard):
 
             if not outcome["ok"]:
                 print("[linkedin] Login check failed — skipping scrape.")
+                run_id = db.start_run(self.name)
                 db.finish_run(run_id, "login_failed")
                 return 0
 
-            result = scraper.scrape(self.selectors, cdp_url=cdp)
+            total_new = 0
+            seen_ids = db.load_seen_ids(self.name)
 
-            if result["login_redirect"]:
-                print("[linkedin] Session died mid-scrape — aborting.")
-                db.finish_run(run_id, "session_expired")
-                telegram.notify_failure(
-                    "LinkedIn session expired mid-scrape",
-                    "The browser was redirected to login while scraping."
-                    " The next run will re-login.",
-                    hint="Check http://localhost:9222 if it persists",
-                )
-                return 0
+            for url in LINKEDIN_SEARCH_URLS:
+                print(f"[linkedin] Starting scrape for URL: {url}")
+                run_id = db.start_run(self.name, url=url)
+                old_handler = None
+                if hasattr(signal, "SIGALRM"):
+                    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+                    signal.alarm(300)
 
-            new_count = 0
-            blocked_names: list[str] = []
-            for job in result["items"]:
-                if blocklist.is_blocked(job["source"], job.get("company") or ""):
-                    db.mark_seen(job["source"], job["external_id"])
-                    blocked_names.append(job.get("company") or "?")
-                    continue
-                db.save_job(job)
-                new_count += 1
-            if blocked_names:
-                print(
-                    f"[linkedin] Filtered out {len(blocked_names)} blocked-company"
-                    f" job(s): {', '.join(sorted(set(blocked_names)))}"
-                )
-            print(f"[linkedin] Saved {new_count} new job(s)")
+                try:
+                    result = scraper.scrape(
+                        self.selectors,
+                        cdp_url=cdp,
+                        url=url,
+                        seen_ids=seen_ids,
+                    )
 
-            pending = db.get_unnotified(self.name)
-            sent = telegram.notify_jobs(pending)
-            print(f"[linkedin] Notified {sent} job(s)")
+                    if result["login_redirect"]:
+                        print("[linkedin] Session died mid-scrape — aborting.")
+                        db.finish_run(run_id, "session_expired", error="Redirected to login")
+                        telegram.notify_failure(
+                            "LinkedIn session expired mid-scrape",
+                            "The browser was redirected to login while scraping."
+                            " The next run will re-login.",
+                            hint="Open chrome://inspect (target localhost:9222) if it persists",
+                        )
+                        return total_new
 
-            db.finish_run(run_id, "ok", jobs_found=new_count)
-            return new_count
+                    new_count = result["new_count"]
+                    blocked_names = result["blocked_names"]
+                    total_new += new_count
+
+                    if blocked_names:
+                        print(
+                            f"[linkedin] Filtered out {len(blocked_names)} blocked-company"
+                            f" job(s): {', '.join(sorted(set(blocked_names)))}"
+                        )
+                    print(f"[linkedin] Saved {new_count} new job(s) for this URL")
+                    db.finish_run(run_id, "ok", jobs_found=new_count)
+
+                except Exception as e:
+                    print(f"[linkedin] Error scraping URL {url}: {e}")
+                    db.finish_run(run_id, "error", error=str(e))
+                    telegram.notify_failure("LinkedIn URL failed", f"URL: {url}\nError: {e}")
+                finally:
+                    if hasattr(signal, "SIGALRM"):
+                        signal.alarm(0)
+                        if old_handler:
+                            signal.signal(signal.SIGALRM, old_handler)
+
+            return total_new
 
         except SystemExit:
             raise
         except Exception as e:
-            db.finish_run(run_id, "error", error=str(e))
             telegram.notify_failure(
                 "LinkedIn board failed",
                 str(e),

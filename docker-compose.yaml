@@ -8,7 +8,9 @@ services:
     # Host networking so Chrome's CDP port (bound to loopback inside the
     # container) is reachable as localhost:9222 on the host — bridge
     # networking can't forward to a container-loopback listener.
-    network_mode: host
+    # network_mode: host (Note: on Windows Docker Desktop, use ports mapping below)
+    ports: 
+      - "9222:9222"
     user: "1000:1000"
     env_file: .env
     environment:
@@ -23,6 +25,8 @@ services:
       - chrome_profile:/app/chromeprofile
       - wuzzuf_profile:/app/wuzzufprofile
       - indeed_profile:/app/indeedprofile
+      - workable_profile:/app/workableprofile
+      - tanqeeb_profile:/app/tanqeebprofile
       - scraper_data:/data
       - ./markup:/data/markup
     command: ["xvfb-run", "-a", "python", "main.py"]
@@ -41,7 +45,7 @@ services:
     # job-exec may be defined on a target container). Seconds-first cron.
     labels:
       ofelia.enabled: "true"
-      ofelia.job-run.scraper.schedule: "0 */6 * * * *"
+      ofelia.job-run.scraper.schedule: "0 */15 * * * *"
       ofelia.job-run.scraper.container: "rtjobs"
       ofelia.job-run.scraper.delete: "false"
 
@@ -49,4 +53,6 @@ volumes:
   chrome_profile:
   wuzzuf_profile:
   indeed_profile:
+  workable_profile:
+  tanqeeb_profile:
   scraper_data:

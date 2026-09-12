@@ -14,11 +14,10 @@ from scrapling import Selector
 from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
-from config import LINKEDIN_SEARCH_URL
-from core import db, markup
+from core import blocklist, db, markup, telegram
 from core.browser import patch_no_load_wait
 
-_MAX_START = 100
+_MAX_START = 75
 _PAGE_SIZE = 25
 _DETAIL_TIMEOUT = 8_000
 
@@ -52,14 +51,17 @@ def _text(sel: Selector, css: str, separator: str = "") -> str:
 class LinkedInJobSpider(Spider):
     name = "linkedin_job_spider"
 
-    def __init__(self, selectors: dict, cdp_url: str, *args, **kwargs):
+    def __init__(self, selectors: dict, cdp_url: str, url: str, seen_ids: set | None = None, *args, **kwargs):
         self.sel = selectors
         self.cdp_url = cdp_url
-        self.seen_ids = db.load_seen_ids("linkedin")
+        self.url = url
+        self.seen_ids = seen_ids if seen_ids is not None else db.load_seen_ids("linkedin")
 
         self._page_jobs: list[dict] = []
         self._repeat_found: bool = False
         self._login_redirect: bool = False
+        self._new_count: int = 0
+        self._blocked_names: list[str] = []
 
         super().__init__(*args, **kwargs)
 
@@ -69,14 +71,17 @@ class LinkedInJobSpider(Spider):
             AsyncStealthySession(
                 cdp_url=self.cdp_url,
                 disable_resources=True,
-                timeout=60_000,
+                timeout=15_000,
                 page_setup=patch_no_load_wait,
             ),
         )
 
     async def start_requests(self):
+        clean_url = re.sub(r"[?&]currentJobId=[^&]+", "", self.url)
+        if "?" not in clean_url and "&" in clean_url:
+            clean_url = clean_url.replace("&", "?", 1)
         yield Request(
-            LINKEDIN_SEARCH_URL,
+            clean_url,
             callback=self.parse,
             sid="stealth",
             page_action=self.deep_scan_page,
@@ -88,15 +93,22 @@ class LinkedInJobSpider(Spider):
 
         try:
             await page.wait_for_selector(
-                self.sel["search"]["job_card"], timeout=30_000
+                self.sel["search"]["job_card"], timeout=10_000
             )
 
             pane = page.locator(self.sel["search"]["results_list"]).first
-            for _ in range(4):
-                await pane.evaluate("el => el.scrollTop += 1000")
-                await asyncio.sleep(0.8)
+            if await pane.count() > 0:
+                for _ in range(3):
+                    await pane.evaluate("el => el.scrollTop += 1500")
+                    await asyncio.sleep(0.3)
         except Exception as e:
-            print(f"[warn] Card list never appeared: {e}")
+            print(f"[warn] Card list wait: {e}")
+            self._repeat_found = True
+            try:
+                html = await page.content()
+                markup.save_snapshot("linkedin", "search_empty", html)
+            except Exception:
+                pass
             return
 
         cards = await page.locator(self.sel["search"]["job_card"]).all()
@@ -118,8 +130,7 @@ class LinkedInJobSpider(Spider):
         )
 
         for card, job_id in jobs_to_scrape_now:
-            await asyncio.sleep(random.uniform(2.0, 4.0))  # human-like pause
-            job = await self._scrape_card(page, card, job_id)
+            job = await self._scrape_card(card, job_id)
             if job:
                 self._page_jobs.append(job)
                 self.seen_ids.add(str(job_id))
@@ -128,7 +139,7 @@ class LinkedInJobSpider(Spider):
             print("[stop] Duplicate detected on this page — no next page.")
             self._repeat_found = True
 
-        if not jobs_to_scrape_now and len(cards) > 0:
+        if not jobs_to_scrape_now:
             self._repeat_found = True
 
         # Suspicious empty page or login redirect -> keep markup for debugging
@@ -137,60 +148,36 @@ class LinkedInJobSpider(Spider):
             kind = "search_redirect" if self._login_redirect else "search_empty"
             markup.save_snapshot("linkedin", kind, html)
 
-    async def _scrape_card(self, page, card, job_id: str) -> dict | None:
+    async def _scrape_card(self, card, job_id: str) -> dict | None:
         try:
-            await card.scroll_into_view_if_needed()
-            await asyncio.sleep(random.uniform(0.8, 2.2))
-            await card.click()
+            title_el = card.locator(
+                "a.job-card-container__link strong, a.job-card-list__title strong, .job-card-list__title strong"
+            ).first
+            if await title_el.count() > 0:
+                title = (await title_el.text_content()).strip()
+            else:
+                raw_text = await card.inner_text()
+                lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
+                title = lines[0] if lines else ""
 
-            try:
-                await page.wait_for_selector(
-                    self.sel["search"]["detail_panel"], timeout=_DETAIL_TIMEOUT
-                )
-            except Exception:
-                print(f"[warn] Detail panel timed out for {job_id} — skipping")
+            comp_el = card.locator(
+                ".job-card-container__primary-description, .job-card-container__company-name, .artdeco-entity-lockup__subtitle"
+            ).first
+            company = (await comp_el.text_content()).strip() if await comp_el.count() > 0 else ""
+
+            if not title:
                 return None
 
-            if (
-                await page.locator(self.sel["search"]["login_redirect"]).count()
-                > 0
-            ):
-                print("[warn] Redirected to login — session may have expired")
-                self._login_redirect = True
-                return None
-
-            await asyncio.sleep(random.uniform(1.5, 4.0))
-
-            html = await page.content()
-            sel = Selector(html)
-            d = self.sel["job_detail"]
-
-            title = _text(sel, d["title"])
-            company = _text(sel, d["company"])
-            rel_time = _text(sel, d["posted_at"])
-            desc = _text(sel, d["description"], separator="\n")
-            mgr_name = _text(sel, d["hiring_manager_name"])
-            mgr_role = _text(sel, d["hiring_manager_role"])
-
-            if not company:
-                # Unknown DOM variant (e.g. companies without a logo) —
-                # keep the markup so selectors can be fixed offline.
-                markup.save_snapshot("linkedin", "company_missing", html)
-                print(f"  [warn] Company name not parsed for {job_id}")
-
-            print(f"  [ok] {title[:45]}")
+            print(f"  [ok] {title[:45]} ({company[:20]})")
             return {
                 "source": "linkedin",
                 "external_id": str(job_id),
                 "title": title,
                 "company": company,
-                "posted_at": _parse_linkedin_time(rel_time),
-                "description": desc,
+                "posted_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "description": title,
                 "link": f"https://www.linkedin.com/jobs/view/{job_id}/",
-                "extra": {
-                    "hiring_manager_name": mgr_name,
-                    "hiring_manager_role": mgr_role,
-                },
+                "extra": {},
                 "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
         except Exception as e:
@@ -200,6 +187,24 @@ class LinkedInJobSpider(Spider):
     async def parse(self, response: Response):
         for job in self._page_jobs:
             yield job
+
+        # Persist + notify this page's jobs immediately so earlier pages
+        # are not lost if a later page hangs.
+        for job in self._page_jobs:
+            if blocklist.is_blocked(job["source"], job.get("company") or ""):
+                db.mark_seen(job["source"], job["external_id"])
+                self._blocked_names.append(job.get("company") or "?")
+                continue
+            db.save_job(job)
+            self._new_count += 1
+
+        if self._page_jobs:
+            sent = telegram.notify_jobs(db.get_unnotified("linkedin"))
+            if sent:
+                print(f"[linkedin] Notified {sent} job(s)")
+        else:
+            print(f"[linkedin] No new jobs on page {response.url}, stopping pagination.")
+            return
 
         if self._repeat_found or self._login_redirect:
             return
@@ -216,7 +221,7 @@ class LinkedInJobSpider(Spider):
             if "start=" in response.url
             else response.url + f"&start={next_start}"
         )
-        print(f"[page] → page {next_start // _PAGE_SIZE + 1}")
+        print(f"[page] \u2192 page {next_start // _PAGE_SIZE + 1}")
         yield Request(
             next_url,
             callback=self.parse,
@@ -225,12 +230,17 @@ class LinkedInJobSpider(Spider):
         )
 
 
-def scrape(selectors: dict, cdp_url: str) -> dict:
-    """Run the spider. Returns {'items': [...], 'login_redirect': bool}."""
-    spider = LinkedInJobSpider(selectors=selectors, cdp_url=cdp_url)
+def scrape(selectors: dict, cdp_url: str, url: str, seen_ids: set | None = None) -> dict:
+    """Run the spider. Returns {'items': [...], 'login_redirect': bool, 'new_count': int, 'blocked_names': list}."""
+    spider = LinkedInJobSpider(selectors=selectors, cdp_url=cdp_url, url=url, seen_ids=seen_ids)
     result = spider.start()
     items = list(result.items)
     print(
         f"[spider] {len(items)} item(s) scraped in {result.stats.elapsed_seconds:.1f}s"
     )
-    return {"items": items, "login_redirect": spider._login_redirect}
+    return {
+        "items": items,
+        "login_redirect": spider._login_redirect,
+        "new_count": spider._new_count,
+        "blocked_names": spider._blocked_names,
+    }

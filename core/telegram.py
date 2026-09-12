@@ -66,6 +66,11 @@ def _send(
 
 def notify_jobs(pending: list) -> int:
     """Send one message per pending job row and mark it notified."""
+    if not pending:
+        return 0
+
+    _send(TELEGRAM_CHAT_ID, "🔔 *New Jobs Found*")
+    
     sent = 0
     for job in pending:
         try:

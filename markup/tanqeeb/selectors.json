@@ -1,0 +1,12 @@
+{
+  "search": {
+    "job_card": "div.search-job-card",
+    "title_link": "a.search-job-title-link",
+    "company": "a.search-job-company-link",
+    "location": ".search-job-company-city",
+    "meta_line": ".search-job-meta-line",
+    "posted_at": ".search-job-date",
+    "description": ".job-card-description-alt",
+    "no_results_marker": "div.alert[role='alert']"
+  }
+}

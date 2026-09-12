@@ -1,8 +1,9 @@
 """Indeed job board: Cloudflare-gated JSON blob pages, no login, no pagination.
 
-Single sort=date search page polled every run (see INDEED.md); job keys get
-a follow-up /viewjob?jk= fetch for the full description.
+Search pages polled every run; stores direct viewjob link + card snippet.
 """
+
+import signal
 
 from boards.base import JobBoard
 from boards.indeed import scraper
@@ -11,15 +12,29 @@ from config import (
     HEADLESS,
     INDEED_ENABLED,
     INDEED_PROFILE_DIR,
+    INDEED_SEARCH_URLS,
     KILL_CHROME_ON_START,
 )
-from core import blocklist, db, telegram
+from core import db, telegram
 from core.browser import (
     cdp_url_for,
     install_cdp_default_context_patch,
     launch_cdp_chrome,
     stop_chrome,
 )
+
+def _timeout_handler(signum, frame):
+    print("[indeed] Hard timeout (5m) reached — terminating process to avoid container hang.")
+    try:
+        from core import telegram
+        telegram.notify_failure(
+            "Indeed run timed out",
+            "The Indeed scraper exceeded the 5-minute timeout and was forcefully terminated to prevent hanging.",
+        )
+    except Exception:
+        pass
+    import os
+    os._exit(1)
 
 install_cdp_default_context_patch()
 
@@ -30,8 +45,6 @@ class IndeedBoard(JobBoard):
     enabled = INDEED_ENABLED
 
     def run(self) -> int:
-        run_id = db.start_run(self.name)
-
         # Same Chrome/CDP model as the other boards: we launch it so the
         # session is live-attachable on the debug port; the spider connects
         # to it. The persistent profile keeps the Cloudflare clearance
@@ -41,33 +54,51 @@ class IndeedBoard(JobBoard):
             clean_locks=KILL_CHROME_ON_START,
         )
 
+        total_new = 0
+        seen_ids = db.load_seen_ids(self.name)
+
         try:
-            items = scraper.scrape(self.selectors, cdp_url=cdp_url_for(CHROME_DEBUG_PORT))
+            for url in INDEED_SEARCH_URLS:
+                print(f"[indeed] Starting scrape for URL: {url}")
+                run_id = db.start_run(self.name, url=url)
+                old_handler = None
+                if hasattr(signal, "SIGALRM"):
+                    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+                    signal.alarm(300)
 
-            new_count = 0
-            blocked_names: list[str] = []
-            for job in items:
-                if blocklist.is_blocked(job["source"], job.get("company") or ""):
-                    db.mark_seen(job["source"], job["external_id"])
-                    blocked_names.append(job.get("company") or "?")
-                    continue
-                db.save_job(job)
-                new_count += 1
-            if blocked_names:
-                print(
-                    f"[indeed] Filtered out {len(blocked_names)} blocked-company"
-                    f" job(s): {', '.join(sorted(set(blocked_names)))}"
-                )
-            print(f"[indeed] Saved {new_count} new job(s)")
+                try:
+                    result = scraper.scrape(
+                        self.selectors,
+                        cdp_url=cdp_url_for(CHROME_DEBUG_PORT),
+                        url=url,
+                        seen_ids=seen_ids,
+                    )
 
-            sent = telegram.notify_jobs(db.get_unnotified(self.name))
-            print(f"[indeed] Notified {sent} job(s)")
+                    new_count = result["new_count"]
+                    blocked_names = result["blocked_names"]
+                    total_new += new_count
 
-            db.finish_run(run_id, "ok", jobs_found=new_count)
-            return new_count
+                    if blocked_names:
+                        print(
+                            f"[indeed] Filtered out {len(blocked_names)} blocked-company"
+                            f" job(s): {', '.join(sorted(set(blocked_names)))}"
+                        )
+                    print(f"[indeed] Saved {new_count} new job(s) for this URL")
+                    db.finish_run(run_id, "ok", jobs_found=new_count)
+
+                except Exception as e:
+                    print(f"[indeed] Error scraping URL {url}: {e}")
+                    db.finish_run(run_id, "error", error=str(e))
+                    telegram.notify_failure("Indeed URL failed", f"URL: {url}\nError: {e}")
+                finally:
+                    if hasattr(signal, "SIGALRM"):
+                        signal.alarm(0)
+                        if old_handler:
+                            signal.signal(signal.SIGALRM, old_handler)
+
+            return total_new
 
         except Exception as e:
-            db.finish_run(run_id, "error", error=str(e))
             telegram.notify_failure("Indeed board failed", str(e))
             print(f"[indeed] Run failed: {e}")
             return 0
