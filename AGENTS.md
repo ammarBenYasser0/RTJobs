@@ -17,7 +17,9 @@ python main.py --reset-login        # clear LinkedIn retry/cooldown state
 python -m py_compile <files...>     # no linter/typechecker configured — compile check + offline tests are the verification loop
 docker compose up -d --build        # scheduled container run (ofelia)
 docker compose logs -f scraper
-./status.sh                         # check runs (last 50, 12h format), today's jobs, and health (status.ps1 on Windows)
+./status.sh                         # check runs (last 50, 12h format), today's jobs, and health (status.ps1 / status.cmd on Windows)
+./pause.sh                          # graceful pause before shutdown/restart (pause.ps1 / pause.cmd on Windows)
+./resume.sh                         # resume scheduler and scraper (resume.ps1 / resume.cmd on Windows)
 ```
 There is NO test framework. Verification = ad-hoc offline scripts that run
 extraction/parsing functions against the fixture files in `markup/` (see
@@ -40,7 +42,9 @@ boards/indeed/           scraper.py (Spider, solve_cloudflare=True) — see INDE
 boards/workable/         scraper.py (Spider, solve_cloudflare=True) — JSON blobs
 boards/tanqeeb/          scraper.py (Spider) — DOM rendered cards
 markup/<site>/selectors.json   ALL CSS selectors live here, never in code
-status.sh / status.ps1   CLI dashboard: recent runs (50 rows, 12h format), today's jobs, health
+status.sh / status.ps1 / status.cmd   CLI dashboard: recent runs (50 rows, 12h format), today's jobs, health
+pause.sh / pause.ps1 / pause.cmd       graceful stop before PC shutdown/restart
+resume.sh / resume.ps1 / resume.cmd    resume scraper and ofelia scheduler
 ```
 Job dict shape everywhere: `source, external_id, title, company, posted_at,
 description, link, extra(dict), scraped_at`.
